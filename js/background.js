@@ -12,6 +12,7 @@ var spaces = (() => {
     let spacesOpenWindowId = false;
     const noop = () => {};
     const debug = false;
+    const tabsToUnload = {};
 
     // LISTENERS
 
@@ -38,6 +39,20 @@ var spaces = (() => {
     });
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         if (checkInternalSpacesWindows(tab.windowId, false)) return;
+
+        if (tabsToUnload[tabId] === true) {
+            // We can only discard the tab once its URL is updated, otherwise it's replaced with about:empty
+            chrome.tabs.discard(tabId, discarded => {
+                if (chrome.runtime.lastError) {
+                    console.error(
+                        'Error discarding tab: ',
+                        chrome.runtime.lastError
+                    );
+                } else {
+                    delete tabsToUnload[tabId];
+                }
+            });
+        }
 
         spacesService.handleTabUpdated(tab, changeInfo, () => {
             updateSpacesWindow('tabs.onUpdated');
@@ -739,61 +754,85 @@ var spaces = (() => {
         // if space is already open, then give it focus
         if (session.windowId) {
             handleLoadWindow(session.windowId, tabUrl);
+            return;
+        }
 
-            // else load space in new window
-        } else {
-            const urls = session.tabs.map(curTab => {
-                return curTab.url;
-            });
-            chrome.windows.create(
-                {
-                    url: urls,
-                    height: screen.height - 100,
-                    width: screen.width - 100,
-                    top: 0,
-                    left: 0,
-                },
-                newWindow => {
-                    // force match this new window to the session
-                    spacesService.matchSessionToWindow(session, newWindow);
+        // else load space in new window
+        const urls = session.tabs.map(curTab => {
+            return curTab.url;
+        });
+        // ['chrome://newtab/'], // Use a placeholder URL or an empty array for a blank page
+        chrome.windows.create(
+            {
+                url: urls[0], // just pass first url, since we want to load the rest of the tabs in discarded state
+                height: screen.height - 100,
+                width: screen.width - 100,
+                top: 0,
+                left: 0,
+            },
+            newWindow => {
+                // force match this new window to the session
+                spacesService.matchSessionToWindow(session, newWindow);
 
-                    // after window has loaded try to pin any previously pinned tabs
-                    session.tabs.forEach(curSessionTab => {
-                        if (curSessionTab.pinned) {
-                            let pinnedTabId = false;
-                            newWindow.tabs.some(curNewTab => {
-                                if (
-                                    curNewTab.url === curSessionTab.url ||
-                                    curNewTab.pendingUrl === curSessionTab.url
-                                ) {
-                                    pinnedTabId = curNewTab.id;
-                                    return true;
-                                }
-                                return false;
-                            });
-                            if (pinnedTabId) {
-                                chrome.tabs.update(pinnedTabId, {
-                                    pinned: true,
-                                });
-                            }
-                        }
-                    });
-
-                    // if tabUrl is defined, then focus this tab
-                    if (tabUrl) {
-                        focusOrLoadTabInWindow(newWindow, tabUrl);
+                for (let i = 0; i < session.tabs.length; i++) {
+                    if (i === 0) {
+                        // ignore the first tab - should be already loaded
+                        continue;
                     }
+                    const curSessionTab = session.tabs[i];
+                    chrome.tabs.create(
+                        {
+                            windowId: newWindow.id,
+                            url: curSessionTab.url,
+                            pinned: curSessionTab.pinned,
+                            active: false,
+                        },
+                        tab => {
+                            tabsToUnload[tab.id] = true;
+                        }
+                    );
+                }
 
-                    /* session.tabs.forEach(function (curTab) {
+                // after window has loaded try to pin any previously pinned tabs
+                session.tabs.forEach(curSessionTab => {
+                    // curSessionTab.active = false;
+                    if (curSessionTab.pinned) {
+                        let pinnedTabId = false;
+                        newWindow.tabs.some(curNewTab => {
+                            if (
+                                curNewTab.url === curSessionTab.url ||
+                                curNewTab.pendingUrl === curSessionTab.url
+                            ) {
+                                pinnedTabId = curNewTab.id;
+                                return true;
+                            }
+                            return false;
+                        });
+                        if (pinnedTabId) {
+                            chrome.tabs.update(pinnedTabId, {
+                                pinned: true,
+                                // active: false,
+                            });
+                        }
+                    }
+                });
+
+                // if tabUrl is defined, then focus this tab
+                if (tabUrl) {
+                    focusOrLoadTabInWindow(newWindow, tabUrl);
+                }
+
+                /*
+                session.tabs.forEach(function (curTab) {
                     chrome.tabs.create({windowId: newWindow.id, url: curTab.url, pinned: curTab.pinned, active: false});
                 });
 
                 chrome.tabs.query({windowId: newWindow.id, index: 0}, function (tabs) {
                     chrome.tabs.remove(tabs[0].id);
-                }); */
-                }
-            );
-        }
+                });
+                */
+            }
+        );
     }
     function handleLoadWindow(windowId, tabUrl) {
         // assume window is already open, give it focus
@@ -823,6 +862,10 @@ var spaces = (() => {
         });
         if (!match) {
             chrome.tabs.create({ url: tabUrl });
+            // chrome.tabs.create({url: "chrome://newtab/", active: false}, tab => {
+            //     // Later, when you want to load the tab, update the URL
+            //     chrome.tabs.update(tab.id, {url: tabUrl, active: true});
+            // });
         }
     }
 
