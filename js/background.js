@@ -41,16 +41,37 @@ var spaces = (() => {
         if (checkInternalSpacesWindows(tab.windowId, false)) return;
 
         if (tabsToUnload[tabId] === true) {
-            // We can only discard the tab once its URL is updated, otherwise it's replaced with about:empty
-            chrome.tabs.discard(tabId, discarded => {
-                if (chrome.runtime.lastError) {
-                    console.error(
-                        'Error discarding tab: ',
-                        chrome.runtime.lastError
-                    );
-                } else {
-                    delete tabsToUnload[tabId];
-                }
+            // Execute content script to check favicon
+            chrome.tabs.executeScript(tabId, { file: 'content.js' }, () => {
+                // Send message to content script to perform favicon check
+                chrome.tabs.sendMessage(
+                    tabId,
+                    { action: 'checkFavicon' },
+                    response => {
+                        if (!response) {
+                            return;
+                        }
+                        const { faviconUrl } = response;
+
+                        // Check if the favicon is loaded
+                        if (faviconUrl) {
+                            // If favicon is loaded, simulate a stop loading by navigating to the current URL again
+                            chrome.tabs.update(tabId, { url: tab.url });
+                        }
+
+                        // After favicon check, discard the tab
+                        chrome.tabs.discard(tabId, discarded => {
+                            if (chrome.runtime.lastError) {
+                                console.error(
+                                    'Error discarding tab:',
+                                    chrome.runtime.lastError
+                                );
+                            } else {
+                                delete tabsToUnload[tabId];
+                            }
+                        });
+                    }
+                );
             });
         }
 
