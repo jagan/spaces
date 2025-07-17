@@ -1623,9 +1623,9 @@ var spaces = (() => {
             // We can only discard the tab once its URL is updated, otherwise it's replaced with about:empty
             chrome.tabs.discard(tabId, discarded => {
                 if (chrome.runtime.lastError) {
-                    console.error(
-                        'Error discarding tab: ',
-                        chrome.runtime.lastError
+                    console.log(
+                        'Error discarding tab (may be closed):',
+                        chrome.runtime.lastError.message
                     );
                 } else {
                     delete tabsToUnload[tabId];
@@ -2163,6 +2163,26 @@ var spaces = (() => {
                 spacesOpenWindowId,
                 { populate: true },
                 window => {
+                    if (chrome.runtime.lastError) {
+                        console.log('Spaces window no longer exists, creating new one:', chrome.runtime.lastError.message);
+                        spacesOpenWindowId = false;
+                        // Recreate the window
+                        chrome.windows.create(
+                            {
+                                type: 'popup',
+                                url,
+                                height: 700,
+                                width: 1000,
+                                top: 0,
+                                left: 0,
+                            },
+                            newWindow => {
+                                spacesOpenWindowId = newWindow.id;
+                            }
+                        );
+                        return;
+                    }
+                    
                     chrome.windows.update(spacesOpenWindowId, {
                         focused: true,
                     });
@@ -2235,6 +2255,27 @@ var spaces = (() => {
                     spacesPopupWindowId,
                     { populate: true },
                     window => {
+                        if (chrome.runtime.lastError) {
+                            console.log('Popup window no longer exists, creating new one:', chrome.runtime.lastError.message);
+                            spacesPopupWindowId = false;
+                            // Recreate the window
+                            chrome.windows.create(
+                                {
+                                    type: 'popup',
+                                    url: popupUrl,
+                                    focused: true,
+                                    height: 450,
+                                    width: 310,
+                                    top: 50,
+                                    left: 50,
+                                },
+                                newWindow => {
+                                    spacesPopupWindowId = newWindow.id;
+                                }
+                            );
+                            return;
+                        }
+                        
                         // if window is currently focused then don't update
                         if (window.focused) {
                             // else update popupUrl and give it focus
@@ -2277,7 +2318,16 @@ var spaces = (() => {
                 spacesPopupWindowId,
                 { populate: true },
                 spacesWindow => {
-                    if (!spacesWindow) return;
+                    if (chrome.runtime.lastError) {
+                        console.log('Popup window already closed:', chrome.runtime.lastError.message);
+                        spacesPopupWindowId = false;
+                        return;
+                    }
+                    
+                    if (!spacesWindow) {
+                        spacesPopupWindowId = false;
+                        return;
+                    }
 
                     // remove popup from history
                     if (
@@ -2293,8 +2343,9 @@ var spaces = (() => {
                     chrome.windows.remove(spacesWindow.id, () => {
                         if (chrome.runtime.lastError) {
                             // eslint-disable-next-line no-console
-                            console.log(chrome.runtime.lastError.message);
+                            console.log('Error removing popup window:', chrome.runtime.lastError.message);
                         }
+                        spacesPopupWindowId = false;
                     });
                 }
             );
@@ -2367,12 +2418,24 @@ var spaces = (() => {
     }
 
     function requestTabDetail(tabId, callback) {
-        chrome.tabs.get(tabId, callback);
+        chrome.tabs.get(tabId, (tab) => {
+            if (chrome.runtime.lastError) {
+                console.log('Tab no longer exists:', chrome.runtime.lastError.message);
+                callback(null);
+            } else {
+                callback(tab);
+            }
+        });
     }
 
     function requestCurrentSpace(callback) {
         chrome.windows.getCurrent(window => {
-            requestSpaceFromWindowId(window.id, callback);
+            if (chrome.runtime.lastError) {
+                console.log('Cannot get current window:', chrome.runtime.lastError.message);
+                callback(null);
+            } else {
+                requestSpaceFromWindowId(window.id, callback);
+            }
         });
     }
 
@@ -2496,7 +2559,11 @@ var spaces = (() => {
                             active: false,
                         },
                         tab => {
-                            tabsToUnload[tab.id] = true;
+                            if (chrome.runtime.lastError) {
+                                console.log('Cannot create tab in session:', chrome.runtime.lastError.message);
+                            } else {
+                                tabsToUnload[tab.id] = true;
+                            }
                         }
                     );
                 }
@@ -2520,6 +2587,10 @@ var spaces = (() => {
                             chrome.tabs.update(pinnedTabId, {
                                 pinned: true,
                                 // active: false,
+                            }, (updatedTab) => {
+                                if (chrome.runtime.lastError) {
+                                    console.log('Cannot pin tab:', chrome.runtime.lastError.message);
+                                }
                             });
                         }
                     }
@@ -2551,29 +2622,47 @@ var spaces = (() => {
         // if tabUrl is defined, then focus this tab
         if (tabUrl) {
             chrome.windows.get(windowId, { populate: true }, window => {
+                if (chrome.runtime.lastError) {
+                    console.log('Window no longer exists for tab focus:', chrome.runtime.lastError.message);
+                    return;
+                }
+                
+                if (!window) {
+                    console.log('Window not found for tab focus');
+                    return;
+                }
+                
                 focusOrLoadTabInWindow(window, tabUrl);
             });
         }
     }
 
     function focusWindow(windowId) {
-        chrome.windows.update(windowId, { focused: true });
+        chrome.windows.update(windowId, { focused: true }, (window) => {
+            if (chrome.runtime.lastError) {
+                console.log('Cannot focus window (may be closed):', chrome.runtime.lastError.message);
+            }
+        });
     }
 
     function focusOrLoadTabInWindow(window, tabUrl) {
         const match = window.tabs.some(tab => {
             if (tab.url === tabUrl) {
-                chrome.tabs.update(tab.id, { active: true });
+                chrome.tabs.update(tab.id, { active: true }, (updatedTab) => {
+                    if (chrome.runtime.lastError) {
+                        console.log('Cannot focus tab (may be closed):', chrome.runtime.lastError.message);
+                    }
+                });
                 return true;
             }
             return false;
         });
         if (!match) {
-            chrome.tabs.create({ url: tabUrl });
-            // chrome.tabs.create({url: "chrome://newtab/", active: false}, tab => {
-            //     // Later, when you want to load the tab, update the URL
-            //     chrome.tabs.update(tab.id, {url: tabUrl, active: true});
-            // });
+            chrome.tabs.create({ url: tabUrl }, (createdTab) => {
+                if (chrome.runtime.lastError) {
+                    console.log('Cannot create tab:', chrome.runtime.lastError.message);
+                }
+            });
         }
     }
 
@@ -2792,14 +2881,18 @@ var spaces = (() => {
         });
     }
     function moveTabToWindow(tab, windowId, callback) {
-        chrome.tabs.move(tab.id, { windowId, index: -1 });
-
-        // NOTE: this move does not seem to trigger any tab event listeners
-        // so we need to update sessions manually
-        spacesService.queueWindowEvent(tab.windowId);
-        spacesService.queueWindowEvent(windowId);
-
-        callback(true);
+        chrome.tabs.move(tab.id, { windowId, index: -1 }, (movedTab) => {
+            if (chrome.runtime.lastError) {
+                console.log('Cannot move tab:', chrome.runtime.lastError.message);
+                callback(false);
+            } else {
+                // NOTE: this move does not seem to trigger any tab event listeners
+                // so we need to update sessions manually
+                spacesService.queueWindowEvent(tab.windowId);
+                spacesService.queueWindowEvent(windowId);
+                callback(true);
+            }
+        });
     }
 
     return {
