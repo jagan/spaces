@@ -52,6 +52,7 @@
     document.addEventListener('DOMContentLoaded', async () => {
         // Get background page data via messaging
         try {
+            console.log('Initializing popup...');
             const backgroundData = await sendMessageWithRetry({ action: 'getBackgroundData' });
             console.log('Background data received:', backgroundData);
             
@@ -72,6 +73,7 @@
             }
             
             // Create wrapper functions that communicate with background script
+            console.log('Creating utils wrapper functions...');
             const utils = {
                 getHashVariable: async (key, urlStr) => {
                     const response = await sendMessageWithRetry({ 
@@ -89,6 +91,7 @@
                 }
             };
             
+            console.log('Creating spaces wrapper functions...');
             const spaces = {
                 requestHotkeys: async (callback) => {
                     const response = await sendMessageWithRetry({ 
@@ -119,6 +122,7 @@
                 }
             };
         
+        console.log('Retrieving hash variables from URL:', window.location.href);
         const url = await utils.getHashVariable('url', window.location.href);
         globalUrl = url !== '' ? decodeURIComponent(url) : false;
         const windowId = await utils.getHashVariable(
@@ -134,15 +138,16 @@
         globalSessionName =
             sessionName && sessionName !== 'false' ? sessionName : false;
         const action = await utils.getHashVariable('action', window.location.href);
+        console.log('Hash variables retrieved:', { url, windowId, tabId: globalTabId, sessionName, action });
 
         const requestSpacePromise = globalWindowId
-            ? new Promise(resolve =>
-                  spaces.requestSpaceFromWindowId(
-                      parseInt(globalWindowId, 10),
-                      resolve
-                  )
-              )
-            : new Promise(resolve => spaces.requestCurrentSpace(resolve));
+            ? sendMessageWithRetry({ 
+                action: 'requestSpaceFromWindowId',
+                windowId: parseInt(globalWindowId, 10)
+              }).then(response => response.result)
+            : sendMessageWithRetry({ 
+                action: 'requestCurrentSpace'
+              }).then(response => response.result);
 
         requestSpacePromise.then(space => {
             globalCurrentSpace = space;
@@ -218,16 +223,18 @@
 
     async function handleCloseAction() {
         try {
-            const backgroundData = await sendMessageWithRetry({ action: 'getBackgroundData' });
-            const { utils } = backgroundData;
-        const opener = utils.getHashVariable('opener', window.location.href);
-        if (opener && opener === 'bg') {
-            chrome.runtime.sendMessage({
-                action: 'requestClose',
+            const opener = await sendMessageWithRetry({ 
+                action: 'getHashVariable', 
+                key: 'opener', 
+                urlStr: window.location.href 
             });
-        } else {
-            window.close();
-        }
+            if (opener.result && opener.result === 'bg') {
+                chrome.runtime.sendMessage({
+                    action: 'requestClose',
+                });
+            } else {
+                window.close();
+            }
         } catch (error) {
             console.error('Failed to handle close action:', error);
             window.close(); // fallback
@@ -240,55 +247,57 @@
 
     async function renderMainCard() {
         try {
-            const backgroundData = await sendMessageWithRetry({ action: 'getBackgroundData' });
-            const { spaces } = backgroundData;
-        spaces.requestHotkeys(hotkeys => {
+            // Get hotkeys and set up UI
+            const hotkeysResponse = await sendMessageWithRetry({ action: 'requestHotkeys' });
+            const hotkeys = hotkeysResponse.result;
+            
             document.querySelector(
                 '#switcherLink .hotkey'
             ).innerHTML = hotkeys.switchCode ? hotkeys.switchCode : NO_HOTKEY;
             document.querySelector(
                 '#moverLink .hotkey'
             ).innerHTML = hotkeys.moveCode ? hotkeys.moveCode : NO_HOTKEY;
-        });
 
-        const hotkeyEls = document.querySelectorAll('.hotkey');
-        for (let i = 0; i < hotkeyEls.length; i += 1) {
-            hotkeyEls[i].addEventListener('click', () => {
-                chrome.runtime.sendMessage({
-                    action: 'requestShowKeyboardShortcuts',
+            const hotkeyEls = document.querySelectorAll('.hotkey');
+            for (let i = 0; i < hotkeyEls.length; i += 1) {
+                hotkeyEls[i].addEventListener('click', () => {
+                    chrome.runtime.sendMessage({
+                        action: 'requestShowKeyboardShortcuts',
+                    });
+                    window.close();
                 });
-                window.close();
-            });
-        }
+            }
 
-        document
-            .querySelector('#allSpacesLink .optionText')
-            .addEventListener('click', () => {
-                chrome.runtime.sendMessage({
-                    action: 'requestShowSpaces',
+            document
+                .querySelector('#allSpacesLink .optionText')
+                .addEventListener('click', () => {
+                    chrome.runtime.sendMessage({
+                        action: 'requestShowSpaces',
+                    });
+                    window.close();
                 });
-                window.close();
-            });
-        document
-            .querySelector('#switcherLink .optionText')
-            .addEventListener('click', () => {
-                spaces.generatePopupParams('switch').then(params => {
-                    if (!params) return;
-                    window.location.hash = params;
+            document
+                .querySelector('#switcherLink .optionText')
+                .addEventListener('click', async () => {
+                    const paramsResponse = await sendMessageWithRetry({ 
+                        action: 'generatePopupParams',
+                        popupAction: 'switch'
+                    });
+                    if (!paramsResponse.result) return;
+                    window.location.hash = paramsResponse.result;
                     window.location.reload();
                 });
-                // renderSwitchCard()
-            });
-        document
-            .querySelector('#moverLink .optionText')
-            .addEventListener('click', () => {
-                spaces.generatePopupParams('move').then(params => {
-                    if (!params) return;
-                    window.location.hash = params;
+            document
+                .querySelector('#moverLink .optionText')
+                .addEventListener('click', async () => {
+                    const paramsResponse = await sendMessageWithRetry({ 
+                        action: 'generatePopupParams',
+                        popupAction: 'move'
+                    });
+                    if (!paramsResponse.result) return;
+                    window.location.hash = paramsResponse.result;
                     window.location.reload();
                 });
-                // renderMoveCard()
-            });
         } catch (error) {
             console.error('Failed to render main card:', error);
         }
