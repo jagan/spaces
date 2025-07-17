@@ -16,7 +16,10 @@
      */
 
     document.addEventListener('DOMContentLoaded', async () => {
-        const { utils, spaces } = chrome.extension.getBackgroundPage();
+        // Get background page data via messaging
+        const backgroundData = await chrome.runtime.sendMessage({ action: 'getBackgroundData' });
+        const { utils, spaces } = backgroundData;
+        
         const url = utils.getHashVariable('url', window.location.href);
         globalUrl = url !== '' ? decodeURIComponent(url) : false;
         const windowId = utils.getHashVariable(
@@ -99,8 +102,9 @@
             });
     }
 
-    function handleCloseAction() {
-        const { utils } = chrome.extension.getBackgroundPage();
+    async function handleCloseAction() {
+        const backgroundData = await chrome.runtime.sendMessage({ action: 'getBackgroundData' });
+        const { utils } = backgroundData;
         const opener = utils.getHashVariable('opener', window.location.href);
         if (opener && opener === 'bg') {
             chrome.runtime.sendMessage({
@@ -115,8 +119,9 @@
      * MAIN POPUP VIEW
      */
 
-    function renderMainCard() {
-        const { spaces } = chrome.extension.getBackgroundPage();
+    async function renderMainCard() {
+        const backgroundData = await chrome.runtime.sendMessage({ action: 'getBackgroundData' });
+        const { spaces } = backgroundData;
         spaces.requestHotkeys(hotkeys => {
             document.querySelector(
                 '#switcherLink .hotkey'

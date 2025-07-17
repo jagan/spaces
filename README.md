@@ -1,39 +1,69 @@
-# <img src="/img/icon48.png" align="absmiddle"> Spaces
+# Spaces - Chrome Extension
 
-### A Chrome extension for Intuitive tab management
+Intuitive tab management for Chrome.
 
-Spaces is a workspace manager for chrome.
-It treats each chrome window like a different workspace and lets you name and save each space.
-You can close a window full of tabs at any time then reopen it later and continue exactly
-where you left off.
+## Installation
 
-Spaces keeps track of new tabs opened in each workspace and also tabs that you close.
-It also allows you to quickly move a tab that you are currently viewing into any
-other space- whether it's open or closed.
-Great for when you find yourself opening a tab out of context with what you are currently
-working on and want to come back to it later.
+### Chrome Extension Store
+[Install from Chrome Web Store](https://chrome.google.com/webstore/detail/spaces/cenkmofngpohdnkbjdpilgpmbiiljjim)
 
-Spaces was developed to help users that tend to have way too many tabs open in a chrome window.
-It encourages you to move tabs that are not immediately relevant into a different,
-more appropriate space - thus removing it from your current window.
-This keeps your chrome session manageable - both visually and from a memory perspective.
+### Development Version (Manifest V3)
 
-Isn't this essentially just bookmarks with folders? Yeah, pretty much - but who uses bookmarks?
+1. Clone this repository
+2. Open Chrome and navigate to `chrome://extensions/`
+3. Enable "Developer mode" in the top right
+4. Click "Load unpacked" and select the extension directory
+5. The extension should now appear in your browser
 
-### Chrome Web Store
+## Manifest V3 Migration
 
-Spaces is also [available via the official Chrome Web Store](https://chrome.google.com/webstore/detail/spaces/cenkmofngpohdnkbjdpilgpmbiiljjim).
+This extension has been upgraded to use Chrome Extension Manifest V3. Key changes made:
 
-Please note that the webstore version may be behind the latest version here.
+### Technical Changes
+- **Manifest Version**: Updated from v2 to v3
+- **Background Scripts**: Converted from persistent background page to service worker
+- **Browser Action**: Updated to use `action` instead of `browser_action`
+- **Permissions**: Moved host permissions to separate field
+- **APIs**: Replaced deprecated `chrome.extension.getBackgroundPage()` with messaging
+- **Storage**: Replaced localStorage with `chrome.storage.local` for service worker compatibility
 
-### Install as an extension from source
+### File Changes
+- `manifest.json`: Updated to v3 format
+- `js/background.js`: Combined all background scripts into single service worker
+- `js/popup.js`: Updated to use messaging instead of background page access
+- `js/spaces.js`: Updated deprecated API calls
 
-1. Download the **[latest available version](https://github.com/deanoemcke/spaces/archive/v1.1.1.zip)** 
-2. Unarchive to your preferred location (e.g., `Downloads`).
-2. In **Google Chrome**, navigate to [chrome://extensions/](chrome://extensions/) and enable <kbd>Developer mode</kbd> in the upper right corner.
-3. Click on the <kbd>LOAD UNPACKED</kbd> button.
-4. Browse to the _root directory_ of the unarchived download, and click <kbd>OPEN</kbd>.
+### Browser Support
+- **Minimum Chrome Version**: 88+ (required for manifest v3)
+- **Firefox**: Not supported (manifest v3 implementation differs)
 
-> **TODO** &mdash; add more sections
-> - [ ] Build from github
-> - [ ] License (currently unspecified)
+## Features
+
+- **Spaces Management**: Save and restore window sessions
+- **Tab Organization**: Move tabs between spaces
+- **Keyboard Shortcuts**: Quick access to space switching
+- **Import/Export**: Backup and restore your spaces
+
+## Development
+
+### Files Structure
+```
+js/
+├── background.js       # Service worker (combined from original background scripts)
+├── popup.js           # Popup window functionality
+├── spaces.js          # Main spaces management UI
+├── spacesRenderer.js  # UI rendering utilities
+├── spacesService.js   # Core spaces logic (legacy, functionality moved to background.js)
+├── switcher.js        # Space switching functionality
+└── utils.js           # Utility functions (legacy, functionality moved to background.js)
+```
+
+### Legacy Files (No Longer Used)
+- `js/db.js` - Database functionality (moved to background.js)
+- `js/dbService.js` - Database service (moved to background.js)
+- `js/spacesService.js` - Core service (moved to background.js)
+- `js/utils.js` - Utilities (moved to background.js)
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

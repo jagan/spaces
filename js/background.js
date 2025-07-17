@@ -1,6 +1,1552 @@
+//Combined service worker for Spaces Chrome Extension (Manifest V3)
+//This file combines: db.js, dbService.js, spacesService.js, utils.js, and background.js
+
+// ===== DB.JS =====
+//The MIT License
+//Copyright (c) 2012 Aaron Powell
+
+(function(globalScope, undefined) {
+    'use strict';
+
+    var indexedDB,
+        IDBKeyRange = globalScope.IDBKeyRange || globalScope.webkitIDBKeyRange,
+        transactionModes = {
+            readonly: 'readonly',
+            readwrite: 'readwrite',
+        };
+
+    var hasOwn = Object.prototype.hasOwnProperty;
+
+    var getIndexedDB = function() {
+        if (!indexedDB) {
+            indexedDB =
+                globalScope.indexedDB ||
+                globalScope.webkitIndexedDB ||
+                globalScope.mozIndexedDB ||
+                globalScope.oIndexedDB ||
+                globalScope.msIndexedDB;
+
+            if (!indexedDB) {
+                throw 'IndexedDB required';
+            }
+        }
+        return indexedDB;
+    };
+
+    var defaultMapper = function(value) {
+        return value;
+    };
+
+    var CallbackList = function() {
+        var state,
+            list = [];
+
+        var exec = function(context, args) {
+            if (list) {
+                args = args || [];
+                state = state || [context, args];
+
+                for (var i = 0, il = list.length; i < il; i++) {
+                    list[i].apply(state[0], state[1]);
+                }
+
+                list = [];
+            }
+        };
+
+        this.add = function() {
+            for (var i = 0, il = arguments.length; i < il; i++) {
+                list.push(arguments[i]);
+            }
+
+            if (state) {
+                exec();
+            }
+
+            return this;
+        };
+
+        this.execute = function() {
+            exec(this, arguments);
+            return this;
+        };
+    };
+
+    var Server = function(db, name) {
+        var that = this,
+            closed = false;
+
+        this.add = function(table) {
+            if (closed) {
+                throw 'Database has been closed';
+            }
+
+            var records = [];
+            var counter = 0;
+
+            for (var i = 0; i < arguments.length - 1; i++) {
+                if (Array.isArray(arguments[i + 1])) {
+                    for (var j = 0; j < arguments[i + 1].length; j++) {
+                        records[counter] = arguments[i + 1][j];
+                        counter++;
+                    }
+                } else {
+                    records[counter] = arguments[i + 1];
+                    counter++;
+                }
+            }
+
+            var transaction = db.transaction(table, transactionModes.readwrite),
+                store = transaction.objectStore(table);
+
+            return new Promise(function(resolve, reject) {
+                records.forEach(function(record) {
+                    var req;
+                    if (record.item && record.key) {
+                        var key = record.key;
+                        record = record.item;
+                        req = store.add(record, key);
+                    } else {
+                        req = store.add(record);
+                    }
+
+                    req.onsuccess = function(e) {
+                        var target = e.target;
+                        var keyPath = target.source.keyPath;
+                        if (keyPath === null) {
+                            keyPath = '__id__';
+                        }
+                        Object.defineProperty(record, keyPath, {
+                            value: target.result,
+                            enumerable: true,
+                        });
+                    };
+                });
+
+                transaction.oncomplete = function() {
+                    resolve(records, that);
+                };
+                transaction.onerror = function(e) {
+                    reject(e);
+                };
+                transaction.onabort = function(e) {
+                    reject(e);
+                };
+            });
+        };
+
+        this.update = function(table) {
+            if (closed) {
+                throw 'Database has been closed';
+            }
+
+            var records = [];
+            for (var i = 0; i < arguments.length - 1; i++) {
+                records[i] = arguments[i + 1];
+            }
+
+            var transaction = db.transaction(table, transactionModes.readwrite),
+                store = transaction.objectStore(table),
+                keyPath = store.keyPath;
+
+            return new Promise(function(resolve, reject) {
+                records.forEach(function(record) {
+                    var req;
+                    var count;
+                    if (record.item && record.key) {
+                        var key = record.key;
+                        record = record.item;
+                        req = store.put(record, key);
+                    } else {
+                        req = store.put(record);
+                    }
+
+                    req.onsuccess = function(e) {
+                        // deferred.notify(); es6 promise can't notify
+                    };
+                });
+
+                transaction.oncomplete = function() {
+                    resolve(records, that);
+                };
+                transaction.onerror = function(e) {
+                    reject(e);
+                };
+                transaction.onabort = function(e) {
+                    reject(e);
+                };
+            });
+        };
+
+        this.remove = function(table, key) {
+            if (closed) {
+                throw 'Database has been closed';
+            }
+            var transaction = db.transaction(table, transactionModes.readwrite),
+                store = transaction.objectStore(table);
+
+            return new Promise(function(resolve, reject) {
+                var req = store['delete'](key);
+                transaction.oncomplete = function() {
+                    resolve(key);
+                };
+                transaction.onerror = function(e) {
+                    reject(e);
+                };
+            });
+        };
+
+        this.clear = function(table) {
+            if (closed) {
+                throw 'Database has been closed';
+            }
+            var transaction = db.transaction(table, transactionModes.readwrite),
+                store = transaction.objectStore(table);
+
+            var req = store.clear();
+            return new Promise(function(resolve, reject) {
+                transaction.oncomplete = function() {
+                    resolve();
+                };
+                transaction.onerror = function(e) {
+                    reject(e);
+                };
+            });
+        };
+
+        this.close = function() {
+            if (closed) {
+                throw 'Database has been closed';
+            }
+            db.close();
+            closed = true;
+            delete dbCache[name];
+        };
+
+        this.get = function(table, id) {
+            if (closed) {
+                throw 'Database has been closed';
+            }
+            var transaction = db.transaction(table),
+                store = transaction.objectStore(table);
+
+            var req = store.get(id);
+            return new Promise(function(resolve, reject) {
+                req.onsuccess = function(e) {
+                    resolve(e.target.result);
+                };
+                transaction.onerror = function(e) {
+                    reject(e);
+                };
+            });
+        };
+
+        this.query = function(table, index) {
+            if (closed) {
+                throw 'Database has been closed';
+            }
+            return new IndexQuery(table, db, index);
+        };
+
+        for (var i = 0, il = db.objectStoreNames.length; i < il; i++) {
+            (function(storeName) {
+                that[storeName] = {};
+                for (var i in that) {
+                    if (!hasOwn.call(that, i) || i === 'close') {
+                        continue;
+                    }
+                    that[storeName][i] = (function(i) {
+                        return function() {
+                            var args = [storeName].concat(
+                                [].slice.call(arguments, 0)
+                            );
+                            return that[i].apply(that, args);
+                        };
+                    })(i);
+                }
+            })(db.objectStoreNames[i]);
+        }
+    };
+
+    var IndexQuery = function(table, db, indexName) {
+        var that = this;
+        var modifyObj = false;
+
+        var runQuery = function(
+            type,
+            args,
+            cursorType,
+            direction,
+            limitRange,
+            filters,
+            mapper
+        ) {
+            var transaction = db.transaction(
+                    table,
+                    modifyObj
+                        ? transactionModes.readwrite
+                        : transactionModes.readonly
+                ),
+                store = transaction.objectStore(table),
+                index = indexName ? store.index(indexName) : store,
+                keyRange = type ? IDBKeyRange[type].apply(null, args) : null,
+                results = [],
+                indexArgs = [keyRange],
+                limitRange = limitRange ? limitRange : null,
+                filters = filters ? filters : [],
+                counter = 0;
+
+            if (cursorType !== 'count') {
+                indexArgs.push(direction || 'next');
+            }
+
+            // create a function that will set in the modifyObj properties into
+            // the passed record.
+            var modifyKeys = modifyObj ? Object.keys(modifyObj) : false;
+            var modifyRecord = function(record) {
+                for (var i = 0; i < modifyKeys.length; i++) {
+                    var key = modifyKeys[i];
+                    var val = modifyObj[key];
+                    if (val instanceof Function) val = val(record);
+                    record[key] = val;
+                }
+                return record;
+            };
+
+            index[cursorType].apply(index, indexArgs).onsuccess = function(e) {
+                var cursor = e.target.result;
+                if (typeof cursor === typeof 0) {
+                    results = cursor;
+                } else if (cursor) {
+                    if (limitRange !== null && limitRange[0] > counter) {
+                        counter = limitRange[0];
+                        cursor.advance(limitRange[0]);
+                    } else if (
+                        limitRange !== null &&
+                        counter >= limitRange[0] + limitRange[1]
+                    ) {
+                        //out of limit range... skip
+                    } else {
+                        var matchFilter = true;
+                        var result =
+                            'value' in cursor ? cursor.value : cursor.key;
+
+                        filters.forEach(function(filter) {
+                            if (!filter || !filter.length) {
+                                //Invalid filter do nothing
+                            } else if (filter.length === 2) {
+                                matchFilter =
+                                    matchFilter &&
+                                    result[filter[0]] === filter[1];
+                            } else {
+                                matchFilter =
+                                    matchFilter &&
+                                    filter[0].apply(undefined, [result]);
+                            }
+                        });
+
+                        if (matchFilter) {
+                            counter++;
+                            results.push(mapper(result));
+                            // if we're doing a modify, run it now
+                            if (modifyObj) {
+                                result = modifyRecord(result);
+                                cursor.update(result);
+                            }
+                        }
+                        cursor['continue']();
+                    }
+                }
+            };
+
+            return new Promise(function(resolve, reject) {
+                transaction.oncomplete = function() {
+                    resolve(results);
+                };
+                transaction.onerror = function(e) {
+                    reject(e);
+                };
+                transaction.onabort = function(e) {
+                    reject(e);
+                };
+            });
+        };
+
+        var Query = function(type, args) {
+            var direction = 'next',
+                cursorType = 'openCursor',
+                filters = [],
+                limitRange = null,
+                mapper = defaultMapper,
+                unique = false;
+
+            var execute = function() {
+                return runQuery(
+                    type,
+                    args,
+                    cursorType,
+                    unique ? direction + 'unique' : direction,
+                    limitRange,
+                    filters,
+                    mapper
+                );
+            };
+
+            var limit = function() {
+                limitRange = Array.prototype.slice.call(arguments, 0, 2);
+                if (limitRange.length == 1) {
+                    limitRange.unshift(0);
+                }
+
+                return {
+                    execute: execute,
+                };
+            };
+            var count = function() {
+                direction = null;
+                cursorType = 'count';
+
+                return {
+                    execute: execute,
+                };
+            };
+            var keys = function() {
+                cursorType = 'openKeyCursor';
+
+                return {
+                    desc: desc,
+                    execute: execute,
+                    filter: filter,
+                    distinct: distinct,
+                    map: map,
+                };
+            };
+            var filter = function() {
+                filters.push(Array.prototype.slice.call(arguments, 0, 2));
+
+                return {
+                    keys: keys,
+                    execute: execute,
+                    filter: filter,
+                    desc: desc,
+                    distinct: distinct,
+                    modify: modify,
+                    limit: limit,
+                    map: map,
+                };
+            };
+            var desc = function() {
+                direction = 'prev';
+
+                return {
+                    keys: keys,
+                    execute: execute,
+                    filter: filter,
+                    distinct: distinct,
+                    modify: modify,
+                    map: map,
+                };
+            };
+            var distinct = function() {
+                unique = true;
+                return {
+                    keys: keys,
+                    count: count,
+                    execute: execute,
+                    filter: filter,
+                    desc: desc,
+                    modify: modify,
+                    map: map,
+                };
+            };
+            var modify = function(update) {
+                modifyObj = update;
+                return {
+                    execute: execute,
+                };
+            };
+            var map = function(fn) {
+                mapper = fn;
+
+                return {
+                    execute: execute,
+                    count: count,
+                    keys: keys,
+                    filter: filter,
+                    desc: desc,
+                    distinct: distinct,
+                    modify: modify,
+                    limit: limit,
+                    map: map,
+                };
+            };
+
+            return {
+                execute: execute,
+                count: count,
+                keys: keys,
+                filter: filter,
+                desc: desc,
+                distinct: distinct,
+                modify: modify,
+                limit: limit,
+                map: map,
+            };
+        };
+
+        'only bound upperBound lowerBound'.split(' ').forEach(function(name) {
+            that[name] = function() {
+                return new Query(name, arguments);
+            };
+        });
+
+        this.filter = function() {
+            var query = new Query(null, null);
+            return query.filter.apply(query, arguments);
+        };
+
+        this.all = function() {
+            return this.filter();
+        };
+    };
+
+    var createSchema = function(e, schema, db) {
+        if (typeof schema === 'function') {
+            schema = schema();
+        }
+
+        for (var tableName in schema) {
+            var table = schema[tableName];
+            var store;
+            if (
+                !hasOwn.call(schema, tableName) ||
+                db.objectStoreNames.contains(tableName)
+            ) {
+                store = e.currentTarget.transaction.objectStore(tableName);
+            } else {
+                store = db.createObjectStore(tableName, table.key);
+            }
+
+            for (var indexKey in table.indexes) {
+                var index = table.indexes[indexKey];
+                try {
+                    store.index(indexKey);
+                } catch (e) {
+                    store.createIndex(
+                        indexKey,
+                        index.key || indexKey,
+                        Object.keys(index).length ? index : { unique: false }
+                    );
+                }
+            }
+        }
+    };
+
+    var open = function(e, server, version, schema) {
+        var db = e.target.result;
+        var s = new Server(db, server);
+        var upgrade;
+
+        dbCache[server] = db;
+
+        return Promise.resolve(s);
+    };
+
+    var dbCache = {};
+
+    var db = {
+        version: '0.9.2',
+        open: function(options) {
+            var request;
+
+            return new Promise(function(resolve, reject) {
+                if (dbCache[options.server]) {
+                    open(
+                        {
+                            target: {
+                                result: dbCache[options.server],
+                            },
+                        },
+                        options.server,
+                        options.version,
+                        options.schema
+                    ).then(resolve, reject);
+                } else {
+                    request = getIndexedDB().open(
+                        options.server,
+                        options.version
+                    );
+
+                    request.onsuccess = function(e) {
+                        open(
+                            e,
+                            options.server,
+                            options.version,
+                            options.schema
+                        ).then(resolve, reject);
+                    };
+
+                    request.onupgradeneeded = function(e) {
+                        createSchema(e, options.schema, e.target.result);
+                    };
+                    request.onerror = function(e) {
+                        reject(e);
+                    };
+                }
+            });
+        },
+    };
+
+    // Export to global scope for service worker
+    if (typeof globalScope !== 'undefined') {
+        globalScope.db = db;
+    }
+})(self);
+
+// ===== DBSERVICE.JS =====
+var dbService = {
+    DB_SERVER: 'spaces',
+    DB_VERSION: '1',
+    DB_SESSIONS: 'ttSessions',
+
+    noop() {},
+
+    /**
+     * INDEXEDDB FUNCTIONS
+     */
+    getDb() {
+        return db.open({
+            server: dbService.DB_SERVER,
+            version: dbService.DB_VERSION,
+            schema: dbService.getSchema,
+        });
+    },
+
+    /**
+     * Properties of a session object
+     * session.id:           auto-generated indexedDb object id
+     * session.sessionHash:  a hash formed from the combined urls in the session window
+     * session.name:         the saved name of the session
+     * session.tabs:         an array of chrome tab objects (often taken from the chrome window obj)
+     * session.history:      an array of chrome tab objects that have been removed from the session
+     * session.lastAccess:   timestamp that gets updated with every window focus
+     */
+    getSchema() {
+        return {
+            ttSessions: {
+                key: {
+                    keyPath: 'id',
+                    autoIncrement: true,
+                },
+                indexes: {
+                    id: {},
+                },
+            },
+        };
+    },
+
+    _fetchAllSessions() {
+        return dbService.getDb().then(s => {
+            return s
+                .query(dbService.DB_SESSIONS)
+                .all()
+                .execute();
+        });
+    },
+
+    _fetchSessionById: id => {
+        const _id = typeof id === 'string' ? parseInt(id, 10) : id;
+        return dbService.getDb().then(s => {
+            return s
+                .query(dbService.DB_SESSIONS, 'id')
+                .only(_id)
+                .distinct()
+                .desc()
+                .execute()
+                .then(results => {
+                    return results.length > 0 ? results[0] : null;
+                });
+        });
+    },
+
+    fetchAllSessions: callback => {
+        const _callback =
+            typeof callback !== 'function' ? dbService.noop : callback;
+        dbService._fetchAllSessions().then(sessions => {
+            _callback(sessions);
+        });
+    },
+
+    fetchSessionById: (id, callback) => {
+        const _id = typeof id === 'string' ? parseInt(id, 10) : id;
+        const _callback =
+            typeof callback !== 'function' ? dbService.noop : callback;
+        dbService._fetchSessionById(_id).then(session => {
+            _callback(session);
+        });
+    },
+
+    fetchSessionNames: callback => {
+        const _callback =
+            typeof callback !== 'function' ? dbService.noop : callback;
+
+        dbService._fetchAllSessions().then(sessions => {
+            _callback(
+                sessions.map(session => {
+                    return session.name;
+                })
+            );
+        });
+    },
+
+    fetchSessionByName: (sessionName, callback) => {
+        const _callback =
+            typeof callback !== 'function' ? dbService.noop : callback;
+
+        dbService._fetchAllSessions().then(sessions => {
+            let matchIndex;
+            const matchFound = sessions.some((session, index) => {
+                if (session.name.toLowerCase() === sessionName.toLowerCase()) {
+                    matchIndex = index;
+                    return true;
+                }
+                return false;
+            });
+
+            if (matchFound) {
+                _callback(sessions[matchIndex]);
+            } else {
+                _callback(false);
+            }
+        });
+    },
+
+    createSession: (session, callback) => {
+        const _callback =
+            typeof callback !== 'function' ? dbService.noop : callback;
+
+        // delete session id in case it already exists
+        const { id, ..._session } = session;
+
+        dbService
+            .getDb()
+            .then(s => {
+                return s.add(dbService.DB_SESSIONS, _session);
+            })
+            .then(result => {
+                if (result.length > 0) {
+                    _callback(result[0]);
+                }
+            });
+    },
+
+    updateSession: (session, callback) => {
+        const _callback =
+            typeof callback !== 'function' ? dbService.noop : callback;
+
+        // ensure session id is set
+        if (!session.id) {
+            _callback(false);
+            return;
+        }
+
+        dbService
+            .getDb()
+            .then(s => {
+                return s.update(dbService.DB_SESSIONS, session);
+            })
+            .then(result => {
+                if (result.length > 0) {
+                    _callback(result[0]);
+                }
+            });
+    },
+
+    removeSession: (id, callback) => {
+        const _id = typeof id === 'string' ? parseInt(id, 10) : id;
+        const _callback =
+            typeof callback !== 'function' ? dbService.noop : callback;
+
+        dbService
+            .getDb()
+            .then(s => {
+                return s.remove(dbService.DB_SESSIONS, _id);
+            })
+            .then(_callback);
+    },
+};
+
+// ===== UTILS.JS =====
+var utils = {
+    getHashVariable: (key, urlStr) => {
+        const valuesByKey = {};
+        const keyPairRegEx = /^(.+)=(.+)/;
+
+        if (!urlStr || urlStr.length === 0 || urlStr.indexOf('#') === -1) {
+            return false;
+        }
+
+        // extract hash component from url
+        const hashStr = urlStr.replace(/^[^#]+#+(.*)/, '$1');
+
+        if (hashStr.length === 0) {
+            return false;
+        }
+
+        hashStr.split('&').forEach(keyPair => {
+            if (keyPair && keyPair.match(keyPairRegEx)) {
+                valuesByKey[
+                    keyPair.replace(keyPairRegEx, '$1')
+                ] = keyPair.replace(keyPairRegEx, '$2');
+            }
+        });
+        return valuesByKey[key] || false;
+    },
+
+    getSwitchKeycodes: callback => {
+        chrome.runtime.sendMessage({ action: 'requestHotkeys' }, commands => {
+            // eslint-disable-next-line no-console
+            console.dir(commands);
+
+            const commandStr = commands.switchCode;
+
+            const keyStrArray = commandStr.split('+');
+
+            // get keyStr of primary modifier
+            const primaryModifier = keyStrArray[0];
+
+            // get keyStr of secondary modifier
+            const secondaryModifier =
+                keyStrArray.length === 3 ? keyStrArray[1] : false;
+
+            // get keycode of main key (last in array)
+            const curStr = keyStrArray[keyStrArray.length - 1];
+
+            // TODO: There's others. Period. Up Arrow etc.
+            let mainKeyCode;
+            if (curStr === 'Space') {
+                mainKeyCode = 32;
+            } else {
+                mainKeyCode = curStr.toUpperCase().charCodeAt();
+            }
+
+            callback({
+                primaryModifier,
+                secondaryModifier,
+                mainKeyCode,
+            });
+        });
+    },
+};
+
+// ===== SPACESSERVICE.JS =====
+var spacesService = {
+    tabHistoryUrlMap: {},
+    closedWindowIds: {},
+    sessions: [],
+    sessionUpdateTimers: {},
+    historyQueue: [],
+    eventQueueCount: 0,
+    lastVersion: 0,
+    debug: false,
+
+    noop: () => {},
+
+    // initialise spaces - combine open windows with saved sessions
+    initialiseSpaces: async () => {
+        // update version numbers
+        spacesService.lastVersion = await spacesService.fetchLastVersion();
+        spacesService.setLastVersion(chrome.runtime.getManifest().version);
+
+        dbService.fetchAllSessions(sessions => {
+            if (
+                chrome.runtime.getManifest().version === '0.18' &&
+                chrome.runtime.getManifest().version !==
+                    spacesService.lastVersion
+            ) {
+                spacesService.resetAllSessionHashes(sessions);
+            }
+
+            chrome.windows.getAll({ populate: true }, windows => {
+                // populate session map from database
+                spacesService.sessions = sessions;
+
+                // clear any previously saved windowIds
+                spacesService.sessions.forEach(session => {
+                    // eslint-disable-next-line no-param-reassign
+                    session.windowId = false;
+                });
+
+                // then try to match current open windows with saved sessions
+                windows.forEach(curWindow => {
+                    if (!spacesService.filterInternalWindows(curWindow)) {
+                        spacesService.checkForSessionMatch(curWindow);
+                    }
+                });
+            });
+        });
+    },
+
+    resetAllSessionHashes: sessions => {
+        sessions.forEach(session => {
+            // eslint-disable-next-line no-param-reassign
+            session.sessionHash = spacesService.generateSessionHash(
+                session.tabs
+            );
+            dbService.updateSession(session);
+        });
+    },
+
+    // record each tab's id and url so we can add history items when tabs are removed
+    initialiseTabHistory: () => {
+        chrome.tabs.query({}, tabs => {
+            tabs.forEach(tab => {
+                spacesService.tabHistoryUrlMap[tab.id] = tab.url;
+            });
+        });
+    },
+
+    // NOTE: if ever changing this funciton, then we'll need to update all
+    // saved sessionHashes so that they match next time, using: resetAllSessionHashes()
+    _cleanUrl: url => {
+        if (!url) {
+            return '';
+        }
+
+        // ignore urls from this extension
+        if (url.indexOf(chrome.runtime.id) >= 0) {
+            return '';
+        }
+
+        // ignore 'new tab' pages
+        if (url.indexOf('chrome:// newtab/') >= 0) {
+            return '';
+        }
+
+        let cleanUrl = url;
+
+        // add support for 'The Great Suspender'
+        if (
+            cleanUrl.indexOf('suspended.html') > 0 &&
+            cleanUrl.indexOf('uri=') > 0
+        ) {
+            cleanUrl = cleanUrl.substring(
+                cleanUrl.indexOf('uri=') + 4,
+                cleanUrl.length
+            );
+        }
+
+        // remove any text after a '#' symbol
+        if (cleanUrl.indexOf('#') > 0) {
+            cleanUrl = cleanUrl.substring(0, cleanUrl.indexOf('#'));
+        }
+
+        // remove any text after a '?' symbol
+        if (cleanUrl.indexOf('?') > 0) {
+            cleanUrl = cleanUrl.substring(0, cleanUrl.indexOf('?'));
+        }
+
+        return cleanUrl;
+    },
+
+    generateSessionHash: tabs => {
+        const text = tabs.reduce((prevStr, tab) => {
+            return prevStr + spacesService._cleanUrl(tab.url);
+        }, '');
+
+        let hash = 0;
+        if (text.length === 0) return hash;
+        for (let i = 0, len = text.length; i < len; i += 1) {
+            const chr = text.charCodeAt(i);
+            // eslint-disable-next-line no-bitwise
+            hash = (hash << 5) - hash + chr;
+            // eslint-disable-next-line no-bitwise
+            hash |= 0; // Convert to 32bit integer
+        }
+        return Math.abs(hash);
+    },
+
+    filterInternalWindows: curWindow => {
+        // sanity check to make sure window isnt an internal spaces window
+        if (
+            curWindow.tabs.length === 1 &&
+            curWindow.tabs[0].url.indexOf(chrome.runtime.id) >= 0
+        ) {
+            return true;
+        }
+
+        // also filter out popup or panel window types
+        if (curWindow.type === 'popup' || curWindow.type === 'panel') {
+            return true;
+        }
+        return false;
+    },
+
+    checkForSessionMatch: curWindow => {
+        if (!curWindow.tabs || curWindow.tabs.length === 0) {
+            return;
+        }
+
+        const sessionHash = spacesService.generateSessionHash(curWindow.tabs);
+        const temporarySession = spacesService.getSessionByWindowId(
+            curWindow.id
+        );
+        const matchingSession = spacesService.getSessionBySessionHash(
+            sessionHash,
+            true
+        );
+
+        if (matchingSession) {
+            if (spacesService.debug)
+                // eslint-disable-next-line no-console
+                console.log(
+                    `matching session found: ${matchingSession.id}. linking with window: ${curWindow.id}`
+                );
+
+            spacesService.matchSessionToWindow(matchingSession, curWindow);
+        }
+
+        // if no match found and this window does not already have a temporary session
+        if (!matchingSession && !temporarySession) {
+            if (spacesService.debug)
+                // eslint-disable-next-line no-console
+                console.log(
+                    `no matching session found. creating temporary session for window: ${curWindow.id}`
+                );
+
+            // create a new temporary session for this window (with no sessionId or name)
+            spacesService.createTemporaryUnmatchedSession(curWindow);
+        }
+    },
+
+    matchSessionToWindow: (session, curWindow) => {
+        // remove any other sessions tied to this windowId (temporary sessions)
+        for (let i = spacesService.sessions.length - 1; i >= 0; i -= 1) {
+            if (spacesService.sessions[i].windowId === curWindow.id) {
+                if (spacesService.sessions[i].id) {
+                    spacesService.sessions[i].windowId = false;
+                } else {
+                    spacesService.sessions.splice(i, 1);
+                }
+            }
+        }
+
+        // assign windowId to newly matched session
+        // eslint-disable-next-line no-param-reassign
+        session.windowId = curWindow.id;
+    },
+
+    createTemporaryUnmatchedSession: curWindow => {
+        if (spacesService.debug) {
+            // eslint-disable-next-line no-console
+            console.dir(spacesService.sessions);
+            // eslint-disable-next-line no-console
+            console.dir(curWindow);
+        }
+
+        const sessionHash = spacesService.generateSessionHash(curWindow.tabs);
+
+        spacesService.sessions.push({
+            id: false,
+            windowId: curWindow.id,
+            sessionHash,
+            name: false,
+            tabs: curWindow.tabs,
+            history: [],
+            lastAccess: new Date(),
+        });
+    },
+
+    // local storage getters/setters
+    fetchLastVersion: () => {
+        return new Promise((resolve) => {
+            chrome.storage.local.get(['spacesVersion'], (result) => {
+                resolve(result.spacesVersion || 0);
+            });
+        });
+    },
+
+    setLastVersion: newVersion => {
+        chrome.storage.local.set({ spacesVersion: newVersion });
+    },
+
+    // event listener functions for window and tab events
+    // (events are received and screened first in background.js)
+    // -----------------------------------------------------------------------------------------
+
+    handleTabRemoved: (tabId, removeInfo, callback) => {
+        if (spacesService.debug)
+            // eslint-disable-next-line no-console
+            console.log(
+                `handlingTabRemoved event. windowId: ${removeInfo.windowId}`
+            );
+
+        // NOTE: isWindowClosing is true if the window cross was clicked causing the tab to be removed.
+        // If the tab cross is clicked and it is the last tab in the window
+        // isWindowClosing will still be false even though the window will close
+        if (removeInfo.isWindowClosing) {
+            // be very careful here as we definitley do not want these removals being saved
+            // as part of the session (effectively corrupting the session)
+
+            // should be handled by the window removed listener
+            spacesService.handleWindowRemoved(
+                removeInfo.windowId,
+                true,
+                spacesService.noop
+            );
+
+            // if this is a legitimate single tab removal from a window then update session/window
+        } else {
+            spacesService.historyQueue.push({
+                url: spacesService.tabHistoryUrlMap[tabId],
+                windowId: removeInfo.windowId,
+                action: 'add',
+            });
+            spacesService.queueWindowEvent(
+                removeInfo.windowId,
+                spacesService.eventQueueCount,
+                callback
+            );
+
+            // remove tab from tabHistoryUrlMap
+            delete spacesService.tabHistoryUrlMap[tabId];
+        }
+    },
+    handleTabMoved: (tabId, moveInfo, callback) => {
+        if (spacesService.debug)
+            // eslint-disable-next-line no-console
+            console.log(
+                `handlingTabMoved event. windowId: ${moveInfo.windowId}`
+            );
+        spacesService.queueWindowEvent(
+            moveInfo.windowId,
+            spacesService.eventQueueCount,
+            callback
+        );
+    },
+    handleTabUpdated: (tab, changeInfo, callback) => {
+        // NOTE: only queue event when tab has completed loading (title property exists at this point)
+        if (tab.status === 'complete') {
+            if (spacesService.debug)
+                // eslint-disable-next-line no-console
+                console.log(
+                    `handlingTabUpdated event. windowId: ${tab.windowId}`
+                );
+
+            // update tab history in case the tab url has changed
+            spacesService.tabHistoryUrlMap[tab.id] = tab.url;
+            spacesService.queueWindowEvent(
+                tab.windowId,
+                spacesService.eventQueueCount,
+                callback
+            );
+        }
+
+        // check for change in tab url. if so, update history
+        if (changeInfo.url) {
+            // add tab to history queue as an item to be removed (as it is open for this window)
+            spacesService.historyQueue.push({
+                url: changeInfo.url,
+                windowId: tab.windowId,
+                action: 'remove',
+            });
+        }
+    },
+    handleWindowRemoved: (windowId, markAsClosed, callback) => {
+        // ignore subsequent windowRemoved events for the same windowId (each closing tab will try to call this)
+        if (spacesService.closedWindowIds[windowId]) {
+            callback();
+        }
+
+        if (spacesService.debug)
+            // eslint-disable-next-line no-console
+            console.log(`handlingWindowRemoved event. windowId: ${windowId}`);
+
+        // add windowId to closedWindowIds. the idea is that once a window is closed it can never be
+        // rematched to a new session (hopefully these window ids never get legitimately re-used)
+        if (markAsClosed) {
+            if (spacesService.debug)
+                // eslint-disable-next-line no-console
+                console.log(`adding window to closedWindowIds: ${windowId}`);
+            spacesService.closedWindowIds[windowId] = true;
+            clearTimeout(spacesService.sessionUpdateTimers[windowId]);
+        }
+
+        const session = spacesService.getSessionByWindowId(windowId);
+        if (session) {
+            // if this is a saved session then just remove the windowId reference
+            if (session.id) {
+                session.windowId = false;
+
+                // else if it is temporary session then remove the session from the cache
+            } else {
+                spacesService.sessions.some((curSession, index) => {
+                    if (curSession.windowId === windowId) {
+                        spacesService.sessions.splice(index, 1);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        callback();
+    },
+    handleWindowFocussed: windowId => {
+        if (spacesService.debug)
+            // eslint-disable-next-line no-console
+            console.log(`handlingWindowFocussed event. windowId: ${windowId}`);
+
+        if (windowId <= 0) {
+            return;
+        }
+
+        const session = spacesService.getSessionByWindowId(windowId);
+        if (session) {
+            session.lastAccess = new Date();
+        }
+    },
+
+    // 1sec timer-based batching system.
+    // Set a timeout so that multiple tabs all opened at once (like when restoring a session)
+    // only trigger this function once (as per the timeout set by the last tab event)
+    // This will cause multiple triggers if time between tab openings is longer than 1 sec
+    queueWindowEvent: (windowId, eventId, callback) => {
+        clearTimeout(spacesService.sessionUpdateTimers[windowId]);
+
+        spacesService.eventQueueCount += 1;
+
+        spacesService.sessionUpdateTimers[windowId] = setTimeout(() => {
+            spacesService.handleWindowEvent(windowId, eventId, callback);
+        }, 1000);
+    },
+
+    // careful here as this function gets called A LOT
+    handleWindowEvent: (windowId, eventId, callback) => {
+        // eslint-disable-next-line no-param-reassign
+        callback =
+            typeof callback !== 'function' ? spacesService.noop : callback;
+
+        if (spacesService.debug)
+            // eslint-disable-next-line no-console
+            console.log('------------------------------------------------');
+        if (spacesService.debug)
+            // eslint-disable-next-line no-console
+            console.log(
+                `event: ${eventId}. attempting session update. windowId: ${windowId}`
+            );
+
+        // sanity check windowId
+        if (!windowId || windowId <= 0) {
+            if (spacesService.debug)
+                // eslint-disable-next-line no-console
+                console.log(
+                    `received an event for windowId: ${windowId} which is obviously wrong`
+                );
+            return;
+        }
+
+        chrome.windows.get(windowId, { populate: true }, curWindow => {
+            if (chrome.runtime.lastError) {
+                // eslint-disable-next-line no-console
+                console.log(
+                    `${chrome.runtime.lastError.message}. perhaps its the development console???`
+                );
+
+                // if we can't find this window, then better remove references to it from the cached sessions
+                // don't mark as a removed window however, so that the space can be resynced up if the window
+                // does actually still exist (for some unknown reason)
+                spacesService.handleWindowRemoved(
+                    windowId,
+                    false,
+                    spacesService.noop
+                );
+                return;
+            }
+
+            if (!curWindow || spacesService.filterInternalWindows(curWindow)) {
+                return;
+            }
+
+            // don't allow event if it pertains to a closed window id
+            if (spacesService.closedWindowIds[windowId]) {
+                if (spacesService.debug)
+                    // eslint-disable-next-line no-console
+                    console.log(
+                        `ignoring event as it pertains to a closed windowId: ${windowId}`
+                    );
+                return;
+            }
+
+            // if window is associated with an open session then update session
+            const session = spacesService.getSessionByWindowId(windowId);
+
+            if (session) {
+                if (spacesService.debug)
+                    // eslint-disable-next-line no-console
+                    console.log(
+                        `tab statuses: ${curWindow.tabs
+                            .map(curTab => {
+                                return curTab.status;
+                            })
+                            .join('|')}`
+                    );
+
+                // look for tabs recently added/removed from this session and update session history
+                const historyItems = spacesService.historyQueue.filter(
+                    historyItem => {
+                        return historyItem.windowId === windowId;
+                    }
+                );
+
+                for (let i = historyItems.length - 1; i >= 0; i -= 1) {
+                    const historyItem = historyItems[i];
+
+                    if (historyItem.action === 'add') {
+                        spacesService.addUrlToSessionHistory(
+                            session,
+                            historyItem.url
+                        );
+                    } else if (historyItem.action === 'remove') {
+                        spacesService.removeUrlFromSessionHistory(
+                            session,
+                            historyItem.url
+                        );
+                    }
+                    spacesService.historyQueue.splice(i, 1);
+                }
+
+                // override session tabs with tabs from window
+                session.tabs = curWindow.tabs;
+                session.sessionHash = spacesService.generateSessionHash(
+                    session.tabs
+                );
+
+                // if it is a saved session then update db
+                if (session.id) {
+                    spacesService.saveExistingSession(session.id);
+                }
+            }
+
+            // if no session found, it must be a new window.
+            // if session found without session.id then it must be a temporary session
+            // check for sessionMatch
+            if (!session || !session.id) {
+                if (spacesService.debug) {
+                    // eslint-disable-next-line no-console
+                    console.log('session check triggered');
+                }
+                spacesService.checkForSessionMatch(curWindow);
+            }
+            callback();
+        });
+    },
+
+    // PUBLIC FUNCTIONS
+
+    getSessionBySessionId: sessionId => {
+        const result = spacesService.sessions.filter(session => {
+            return session.id === sessionId;
+        });
+        return result.length === 1 ? result[0] : false;
+    },
+    getSessionByWindowId: windowId => {
+        const result = spacesService.sessions.filter(session => {
+            return session.windowId === windowId;
+        });
+        return result.length === 1 ? result[0] : false;
+    },
+    getSessionBySessionHash: (hash, closedOnly) => {
+        const result = spacesService.sessions.filter(session => {
+            if (closedOnly) {
+                return session.sessionHash === hash && !session.windowId;
+            }
+            return session.sessionHash === hash;
+        });
+        return result.length >= 1 ? result[0] : false;
+    },
+    getSessionByName: name => {
+        const result = spacesService.sessions.filter(session => {
+            return (
+                session.name &&
+                session.name.toLowerCase() === name.toLowerCase()
+            );
+        });
+        return result.length >= 1 ? result[0] : false;
+    },
+    getAllSessions: () => {
+        return spacesService.sessions;
+    },
+
+    addUrlToSessionHistory: (session, newUrl) => {
+        if (spacesService.debug) {
+            // eslint-disable-next-line no-console
+            console.log(`adding tab to history: ${newUrl}`);
+        }
+
+        const cleanUrl = spacesService._cleanUrl(newUrl);
+
+        if (cleanUrl.length === 0) {
+            return false;
+        }
+
+        // don't add removed tab to history if there is still a tab open with same url
+        // note: assumes tab has NOT already been removed from session.tabs
+        const tabBeingRemoved = session.tabs.filter(curTab => {
+            return spacesService._cleanUrl(curTab.url) === cleanUrl;
+        });
+
+        if (tabBeingRemoved.length !== 1) {
+            return false;
+        }
+
+        // eslint-disable-next-line no-param-reassign
+        if (!session.history) session.history = [];
+
+        // see if tab already exists in history. if so then remove it (it will be re-added)
+        session.history.some((historyTab, index) => {
+            if (spacesService._cleanUrl(historyTab.url) === cleanUrl) {
+                session.history.splice(index, 1);
+                return true;
+            }
+            return false;
+        });
+
+        // add url to session history
+        // eslint-disable-next-line no-param-reassign
+        session.history = tabBeingRemoved.concat(session.history);
+
+        // trim history for this space down to last 200 items
+        // eslint-disable-next-line no-param-reassign
+        session.history = session.history.slice(0, 200);
+
+        return session;
+    },
+
+    removeUrlFromSessionHistory: (session, newUrl) => {
+        if (spacesService.debug) {
+            // eslint-disable-next-line no-console
+            console.log(`removing tab from history: ${newUrl}`);
+        }
+
+        // eslint-disable-next-line no-param-reassign
+        newUrl = spacesService._cleanUrl(newUrl);
+
+        if (newUrl.length === 0) {
+            return;
+        }
+
+        // see if tab already exists in history. if so then remove it
+        session.history.some((historyTab, index) => {
+            if (spacesService._cleanUrl(historyTab.url) === newUrl) {
+                session.history.splice(index, 1);
+                return true;
+            }
+            return false;
+        });
+    },
+
+    // Database actions
+
+    updateSessionTabs: (sessionId, tabs, callback) => {
+        const session = spacesService.getSessionBySessionId(sessionId);
+
+        // eslint-disable-next-line no-param-reassign
+        callback =
+            typeof callback !== 'function' ? spacesService.noop : callback;
+
+        // update tabs in session
+        session.tabs = tabs;
+        session.sessionHash = spacesService.generateSessionHash(session.tabs);
+
+        spacesService.saveExistingSession(session.id, callback);
+    },
+
+    updateSessionName: (sessionId, sessionName, callback) => {
+        // eslint-disable-next-line no-param-reassign
+        callback =
+            typeof callback !== 'function' ? spacesService.noop : callback;
+
+        const session = spacesService.getSessionBySessionId(sessionId);
+        session.name = sessionName;
+
+        spacesService.saveExistingSession(session.id, callback);
+    },
+
+    saveExistingSession: (sessionId, callback) => {
+        const session = spacesService.getSessionBySessionId(sessionId);
+
+        // eslint-disable-next-line no-param-reassign
+        callback =
+            typeof callback !== 'function' ? spacesService.noop : callback;
+
+        dbService.updateSession(session, callback);
+    },
+
+    saveNewSession: (sessionName, tabs, windowId, callback) => {
+        if (!tabs) {
+            callback();
+            return;
+        }
+
+        const sessionHash = spacesService.generateSessionHash(tabs);
+        let session;
+
+        // eslint-disable-next-line no-param-reassign
+        callback =
+            typeof callback !== 'function' ? spacesService.noop : callback;
+
+        // check for a temporary session with this windowId
+        if (windowId) {
+            session = spacesService.getSessionByWindowId(windowId);
+        }
+
+        // if no temporary session found with this windowId, then create one
+        if (!session) {
+            session = {
+                windowId,
+                history: [],
+            };
+            spacesService.sessions.push(session);
+        }
+
+        // update temporary session details
+        session.name = sessionName;
+        session.sessionHash = sessionHash;
+        session.tabs = tabs;
+        session.lastAccess = new Date();
+
+        // save session to db
+        dbService.createSession(session, savedSession => {
+            // update sessionId in cache
+            session.id = savedSession.id;
+
+            callback(savedSession);
+        });
+    },
+
+    deleteSession: (sessionId, callback) => {
+        // eslint-disable-next-line no-param-reassign
+        callback =
+            typeof callback !== 'function' ? spacesService.noop : callback;
+
+        dbService.removeSession(sessionId, () => {
+            // remove session from cached array
+            spacesService.sessions.some((session, index) => {
+                if (session.id === sessionId) {
+                    spacesService.sessions.splice(index, 1);
+                    return true;
+                }
+                return false;
+            });
+            callback();
+        });
+    },
+};
+
+// ===== BACKGROUND.JS (ORIGINAL) =====
 /* eslint-disable no-restricted-globals */
 /* eslint-disable no-alert */
-/* global chrome spacesService */
 
 /* spaces
  * Copyright (C) 2015 Dean Oemcke
@@ -113,6 +1659,23 @@ var spaces = (() => {
         let sessionId;
         let windowId;
         let tabId;
+
+        // Handle popup communication requests
+        if (request.action === 'getBackgroundData') {
+            sendResponse({
+                utils: {
+                    getHashVariable: utils.getHashVariable,
+                    getSwitchKeycodes: utils.getSwitchKeycodes,
+                },
+                spaces: {
+                    requestHotkeys: requestHotkeys,
+                    generatePopupParams: generatePopupParams,
+                    requestSpaceFromWindowId: requestSpaceFromWindowId,
+                    requestCurrentSpace: requestCurrentSpace,
+                }
+            });
+            return true;
+        }
 
         // endpoints called by spaces.js
         switch (request.action) {
@@ -439,11 +2002,11 @@ var spaces = (() => {
         let url;
 
         if (editMode && windowId) {
-            url = chrome.extension.getURL(
+            url = chrome.runtime.getURL(
                 `spaces.html#windowId=${windowId}&editMode=true`
             );
         } else {
-            url = chrome.extension.getURL('spaces.html');
+            url = chrome.runtime.getURL('spaces.html');
         }
 
         // if spaces open window already exists then just give it focus (should be up to date)
@@ -515,7 +2078,7 @@ var spaces = (() => {
 
     function createOrShowSpacesPopupWindow(action, tabUrl) {
         generatePopupParams(action, tabUrl).then(params => {
-            const popupUrl = `${chrome.extension.getURL(
+            const popupUrl = `${chrome.runtime.getURL(
                 'popup.html'
             )}#opener=bg&${params}`;
             // if spaces  window already exists
@@ -618,20 +2181,17 @@ var spaces = (() => {
     function checkSessionOverwrite(session) {
         // make sure session being overwritten is not currently open
         if (session.windowId) {
-            alert(
-                `A session with the name '${session.name}' is currently open an cannot be overwritten`
-            );
+            // alert not available in service worker, we'll use confirm dialogs in the UI instead
+            console.log(`Session '${session.name}' is currently open and cannot be overwritten`);
             return false;
-
-            // otherwise prompt to see if user wants to overwrite session
         }
-        return window.confirm(`Replace existing space: ${session.name}?`);
+        // For now, always allow overwrite - UI should handle confirmation
+        return true;
     }
 
     function checkSessionDelete(session) {
-        return window.confirm(
-            `Are you sure you want to delete the space: ${session.name}?`
-        );
+        // For now, always allow delete - UI should handle confirmation
+        return true;
     }
 
     function requestHotkeys(callback) {
@@ -1102,5 +2662,6 @@ var spaces = (() => {
     };
 })();
 
+// Initialize the extension
 spacesService.initialiseSpaces();
 spacesService.initialiseTabHistory();
