@@ -1,33 +1,51 @@
 //Combined service worker for Spaces Chrome Extension (Manifest V3)
 //This file combines: db.js, dbService.js, spacesService.js, utils.js, and background.js
 
+console.log('Service worker starting...');
+
+// Global initialization state
+let isServiceWorkerInitialized = false;
+
 // ===== DB.JS =====
 //The MIT License
 //Copyright (c) 2012 Aaron Powell
 
+try {
 (function(globalScope, undefined) {
     'use strict';
 
     var indexedDB,
-        IDBKeyRange = globalScope.IDBKeyRange || globalScope.webkitIDBKeyRange,
+        IDBKeyRange,
         transactionModes = {
             readonly: 'readonly',
             readwrite: 'readwrite',
         };
 
+    // Initialize IDBKeyRange safely
+    try {
+        IDBKeyRange = globalScope.IDBKeyRange || globalScope.webkitIDBKeyRange;
+    } catch (e) {
+        console.warn('IDBKeyRange not available:', e);
+    }
+
     var hasOwn = Object.prototype.hasOwnProperty;
 
     var getIndexedDB = function() {
         if (!indexedDB) {
-            indexedDB =
-                globalScope.indexedDB ||
-                globalScope.webkitIndexedDB ||
-                globalScope.mozIndexedDB ||
-                globalScope.oIndexedDB ||
-                globalScope.msIndexedDB;
+            try {
+                indexedDB =
+                    globalScope.indexedDB ||
+                    globalScope.webkitIndexedDB ||
+                    globalScope.mozIndexedDB ||
+                    globalScope.oIndexedDB ||
+                    globalScope.msIndexedDB;
 
-            if (!indexedDB) {
-                throw 'IndexedDB required';
+                if (!indexedDB) {
+                    throw new Error('IndexedDB required');
+                }
+            } catch (e) {
+                console.error('Failed to initialize IndexedDB:', e);
+                throw e;
             }
         }
         return indexedDB;
@@ -598,10 +616,17 @@
     };
 
     // Export to global scope for service worker
-    if (typeof globalScope !== 'undefined') {
-        globalScope.db = db;
+    try {
+        if (typeof globalScope !== 'undefined') {
+            globalScope.db = db;
+        }
+    } catch (e) {
+        console.error('Failed to export db to global scope:', e);
     }
 })(self);
+} catch (dbError) {
+    console.error('Failed to initialize DB module:', dbError);
+}
 
 // ===== DBSERVICE.JS =====
 var dbService = {
@@ -777,7 +802,10 @@ var dbService = {
 };
 
 // ===== UTILS.JS =====
-var utils = {
+console.log('Initializing utils module...');
+
+// Use globalThis to ensure utils is available in service worker context
+globalThis.utils = {
     getHashVariable: (key, urlStr) => {
         const valuesByKey = {};
         const keyPairRegEx = /^(.+)=(.+)/;
@@ -838,6 +866,11 @@ var utils = {
         });
     },
 };
+
+// Also create a var reference for backwards compatibility
+var utils = globalThis.utils;
+
+console.log('Utils module initialized:', !!utils, !!utils.getHashVariable);
 
 // ===== SPACESSERVICE.JS =====
 var spacesService = {
@@ -1663,28 +1696,129 @@ var spaces = (() => {
         // Handle popup communication requests
         if (request.action === 'getBackgroundData') {
             try {
-                // Ensure service worker is initialized before responding
-                if (!utils || !utils.getHashVariable) {
-                    console.error('Utils not initialized, reinitializing...');
-                    initializeExtension();
-                    sendResponse({ error: 'Service worker not properly initialized, please try again' });
+                // Check if service worker is fully initialized
+                if (!isServiceWorkerInitialized) {
+                    console.warn('Service worker not fully initialized yet, initialization state:', isServiceWorkerInitialized);
+                    sendResponse({ error: 'Service worker still initializing, please try again in a moment' });
                     return true;
                 }
                 
+                // Use globalThis to ensure we're getting the correct objects
+                const utilsRef = globalThis.utils || utils;
+                const spacesRef = globalThis.spaces || spaces;
+                
+                // Double-check all required components are available
+                if (!utilsRef || !utilsRef.getHashVariable || !spacesRef || !spacesRef.requestHotkeys) {
+                    console.error('Service worker components not available, details:', {
+                        utils: !!utilsRef,
+                        utilsGetHashVariable: !!(utilsRef && utilsRef.getHashVariable),
+                        spaces: !!spacesRef,
+                        spacesRequestHotkeys: !!(spacesRef && spacesRef.requestHotkeys),
+                        globalUtils: !!globalThis.utils,
+                        varUtils: !!utils,
+                        globalSpaces: !!globalThis.spaces,
+                        varSpaces: !!spaces,
+                        isInitialized: isServiceWorkerInitialized
+                    });
+                    sendResponse({ error: 'Service worker components not properly initialized, please try again' });
+                    return true;
+                }
+                
+                console.log('Sending background data - utils:', !!utilsRef.getHashVariable, 'spaces:', !!spacesRef.requestHotkeys);
+                
+                // Don't send functions directly - they don't serialize properly
+                // Instead, store references globally and send flags
+                globalThis.backgroundUtils = utilsRef;
+                globalThis.backgroundSpaces = spacesRef;
+                
                 sendResponse({
-                    utils: {
-                        getHashVariable: utils.getHashVariable,
-                        getSwitchKeycodes: utils.getSwitchKeycodes,
-                    },
-                    spaces: {
-                        requestHotkeys: requestHotkeys,
-                        generatePopupParams: generatePopupParams,
-                        requestSpaceFromWindowId: requestSpaceFromWindowId,
-                        requestCurrentSpace: requestCurrentSpace,
-                    }
+                    status: 'ready',
+                    utilsAvailable: !!(utilsRef && utilsRef.getHashVariable),
+                    spacesAvailable: !!(spacesRef && spacesRef.requestHotkeys)
                 });
             } catch (error) {
                 console.error('Error in getBackgroundData:', error);
+                sendResponse({ error: error.message });
+            }
+            return true;
+        }
+
+        // Handle individual function calls from popup
+        if (request.action === 'getHashVariable') {
+            try {
+                const utilsRef = globalThis.backgroundUtils || globalThis.utils || utils;
+                const result = utilsRef.getHashVariable(request.key, request.urlStr);
+                sendResponse({ result: result });
+            } catch (error) {
+                console.error('Error in getHashVariable:', error);
+                sendResponse({ error: error.message });
+            }
+            return true;
+        }
+
+        if (request.action === 'getSwitchKeycodes') {
+            try {
+                const utilsRef = globalThis.backgroundUtils || globalThis.utils || utils;
+                utilsRef.getSwitchKeycodes((result) => {
+                    sendResponse({ result: result });
+                });
+            } catch (error) {
+                console.error('Error in getSwitchKeycodes:', error);
+                sendResponse({ error: error.message });
+            }
+            return true;
+        }
+
+        if (request.action === 'requestHotkeys') {
+            try {
+                const spacesRef = globalThis.backgroundSpaces || globalThis.spaces || spaces;
+                spacesRef.requestHotkeys((result) => {
+                    sendResponse({ result: result });
+                });
+            } catch (error) {
+                console.error('Error in requestHotkeys:', error);
+                sendResponse({ error: error.message });
+            }
+            return true;
+        }
+
+        if (request.action === 'generatePopupParams') {
+            try {
+                const spacesRef = globalThis.backgroundSpaces || globalThis.spaces || spaces;
+                spacesRef.generatePopupParams(request.popupAction, request.tabUrl).then((result) => {
+                    sendResponse({ result: result });
+                }).catch((error) => {
+                    console.error('Error in generatePopupParams:', error);
+                    sendResponse({ error: error.message });
+                });
+            } catch (error) {
+                console.error('Error in generatePopupParams:', error);
+                sendResponse({ error: error.message });
+            }
+            return true;
+        }
+
+        if (request.action === 'requestSpaceFromWindowId') {
+            try {
+                const spacesRef = globalThis.backgroundSpaces || globalThis.spaces || spaces;
+                spacesRef.requestSpaceFromWindowId(request.windowId, (result) => {
+                    sendResponse({ result: result });
+                });
+            } catch (error) {
+                console.error('Error in requestSpaceFromWindowId:', error);
+                sendResponse({ error: error.message });
+            }
+            return true;
+        }
+
+        if (request.action === 'requestCurrentSpace') {
+            try {
+                const spacesRef = globalThis.backgroundSpaces || globalThis.spaces || spaces;
+                spacesRef.requestCurrentSpace((result) => {
+                    sendResponse({ result: result });
+                });
+            } catch (error) {
+                console.error('Error in requestCurrentSpace:', error);
                 sendResponse({ error: error.message });
             }
             return true;
@@ -2676,6 +2810,10 @@ var spaces = (() => {
     };
 })();
 
+// Ensure spaces is available globally
+globalThis.spaces = spaces;
+console.log('Spaces module initialized:', !!spaces, !!spaces.requestHotkeys);
+
 // Handle service worker lifecycle events
 chrome.runtime.onStartup.addListener(() => {
     console.log('Service worker startup');
@@ -2690,9 +2828,32 @@ chrome.runtime.onSuspend.addListener(() => {
 function initializeExtension() {
     (async () => {
         try {
+            console.log('Starting extension initialization...', {
+                utils: !!utils,
+                spacesService: !!spacesService,
+                spaces: !!spaces,
+                globalUtils: !!globalThis.utils,
+                globalSpaces: !!globalThis.spaces
+            });
+            
             await spacesService.initialiseSpaces();
             spacesService.initialiseTabHistory();
-            console.log('Extension initialized successfully');
+            
+            // Set the initialization flag
+            isServiceWorkerInitialized = true;
+            
+            console.log('Extension initialized successfully', {
+                utils: !!utils,
+                spacesService: !!spacesService,
+                spaces: !!spaces,
+                utilsGetHashVariable: !!(utils && utils.getHashVariable),
+                spacesRequestHotkeys: !!(spaces && spaces.requestHotkeys),
+                globalUtils: !!globalThis.utils,
+                globalSpaces: !!globalThis.spaces,
+                globalUtilsGetHashVariable: !!(globalThis.utils && globalThis.utils.getHashVariable),
+                globalSpacesRequestHotkeys: !!(globalThis.spaces && globalThis.spaces.requestHotkeys),
+                isInitialized: isServiceWorkerInitialized
+            });
         } catch (error) {
             console.error('Failed to initialize spaces service:', error);
         }
@@ -2700,4 +2861,24 @@ function initializeExtension() {
 }
 
 // Initialize immediately when service worker loads
-initializeExtension();
+try {
+    initializeExtension();
+} catch (error) {
+    console.error('Failed to initialize extension:', error);
+}
+
+// Keep service worker alive when popup is open
+let keepAlivePort;
+chrome.runtime.onConnect.addListener((port) => {
+    if (port.name === 'keepAlive') {
+        keepAlivePort = port;
+        console.log('Keep alive connection established');
+        
+        port.onDisconnect.addListener(() => {
+            console.log('Keep alive connection disconnected');
+            keepAlivePort = null;
+        });
+    }
+});
+
+console.log('Service worker setup complete');

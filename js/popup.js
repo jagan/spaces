@@ -12,14 +12,16 @@
     let globalSessionName;
 
     // Utility function to send messages with retry logic
-    async function sendMessageWithRetry(message, maxRetries = 3) {
+    async function sendMessageWithRetry(message, maxRetries = 5) {
         for (let i = 0; i < maxRetries; i++) {
             try {
                 const response = await chrome.runtime.sendMessage(message);
                 if (response && response.error) {
                     // If service worker is not initialized, wait longer before retrying
                     if (response.error.includes('not properly initialized')) {
-                        await new Promise(resolve => setTimeout(resolve, 500));
+                        console.log(`Service worker not initialized, waiting before retry ${i + 1}`);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        continue;
                     }
                     throw new Error(response.error);
                 }
@@ -30,7 +32,7 @@
                     throw error;
                 }
                 // Wait before retrying, longer delays for later attempts
-                await new Promise(resolve => setTimeout(resolve, 200 * (i + 1)));
+                await new Promise(resolve => setTimeout(resolve, 300 * (i + 1)));
             }
         }
     }
@@ -39,27 +41,99 @@
      * POPUP INIT
      */
 
+    // Establish keep-alive connection to prevent service worker suspension
+    const keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
+    
+    // Clean up connection when popup closes
+    window.addEventListener('beforeunload', () => {
+        keepAlivePort.disconnect();
+    });
+
     document.addEventListener('DOMContentLoaded', async () => {
         // Get background page data via messaging
         try {
             const backgroundData = await sendMessageWithRetry({ action: 'getBackgroundData' });
-            const { utils, spaces } = backgroundData;
+            console.log('Background data received:', backgroundData);
+            
+            if (!backgroundData) {
+                throw new Error('No background data received');
+            }
+            
+            if (backgroundData.status !== 'ready') {
+                throw new Error('Background script not ready');
+            }
+            
+            if (!backgroundData.utilsAvailable) {
+                throw new Error('Utils functions not available in background script');
+            }
+            
+            if (!backgroundData.spacesAvailable) {
+                throw new Error('Spaces functions not available in background script');
+            }
+            
+            // Create wrapper functions that communicate with background script
+            const utils = {
+                getHashVariable: async (key, urlStr) => {
+                    const response = await sendMessageWithRetry({ 
+                        action: 'getHashVariable', 
+                        key: key, 
+                        urlStr: urlStr 
+                    });
+                    return response.result;
+                },
+                getSwitchKeycodes: async (callback) => {
+                    const response = await sendMessageWithRetry({ 
+                        action: 'getSwitchKeycodes'
+                    });
+                    callback(response.result);
+                }
+            };
+            
+            const spaces = {
+                requestHotkeys: async (callback) => {
+                    const response = await sendMessageWithRetry({ 
+                        action: 'requestHotkeys'
+                    });
+                    callback(response.result);
+                },
+                generatePopupParams: async (action, tabUrl) => {
+                    const response = await sendMessageWithRetry({ 
+                        action: 'generatePopupParams',
+                        popupAction: action,
+                        tabUrl: tabUrl
+                    });
+                    return response.result;
+                },
+                requestSpaceFromWindowId: async (windowId, callback) => {
+                    const response = await sendMessageWithRetry({ 
+                        action: 'requestSpaceFromWindowId',
+                        windowId: windowId
+                    });
+                    callback(response.result);
+                },
+                requestCurrentSpace: async (callback) => {
+                    const response = await sendMessageWithRetry({ 
+                        action: 'requestCurrentSpace'
+                    });
+                    callback(response.result);
+                }
+            };
         
-        const url = utils.getHashVariable('url', window.location.href);
+        const url = await utils.getHashVariable('url', window.location.href);
         globalUrl = url !== '' ? decodeURIComponent(url) : false;
-        const windowId = utils.getHashVariable(
+        const windowId = await utils.getHashVariable(
             'windowId',
             window.location.href
         );
         globalWindowId = windowId !== '' ? windowId : false;
-        globalTabId = utils.getHashVariable('tabId', window.location.href);
-        const sessionName = utils.getHashVariable(
+        globalTabId = await utils.getHashVariable('tabId', window.location.href);
+        const sessionName = await utils.getHashVariable(
             'sessionName',
             window.location.href
         );
         globalSessionName =
             sessionName && sessionName !== 'false' ? sessionName : false;
-        const action = utils.getHashVariable('action', window.location.href);
+        const action = await utils.getHashVariable('action', window.location.href);
 
         const requestSpacePromise = globalWindowId
             ? new Promise(resolve =>
@@ -77,8 +151,18 @@
         });
         } catch (error) {
             console.error('Failed to initialize popup:', error);
-            // Display error message to user
-            document.body.innerHTML = '<div style="padding: 20px; color: red;">Failed to connect to background script. Please try reloading the extension.</div>';
+            // Display error message to user with more helpful information
+            const errorMessage = error.message.includes('not properly initialized') 
+                ? 'Extension is starting up, please try again in a moment.'
+                : 'Failed to connect to background script. Please try reloading the extension.';
+            
+            document.body.innerHTML = `
+                <div style="padding: 20px; color: red; font-family: Arial, sans-serif;">
+                    <h3>Extension Error</h3>
+                    <p>${errorMessage}</p>
+                    <button onclick="location.reload()">Try Again</button>
+                </div>
+            `;
         }
     });
 
