@@ -11,14 +11,39 @@
     let globalWindowId;
     let globalSessionName;
 
+    // Utility function to send messages with retry logic
+    async function sendMessageWithRetry(message, maxRetries = 3) {
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                const response = await chrome.runtime.sendMessage(message);
+                if (response && response.error) {
+                    // If service worker is not initialized, wait longer before retrying
+                    if (response.error.includes('not properly initialized')) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                    throw new Error(response.error);
+                }
+                return response;
+            } catch (error) {
+                console.warn(`Message send attempt ${i + 1} failed:`, error);
+                if (i === maxRetries - 1) {
+                    throw error;
+                }
+                // Wait before retrying, longer delays for later attempts
+                await new Promise(resolve => setTimeout(resolve, 200 * (i + 1)));
+            }
+        }
+    }
+
     /*
      * POPUP INIT
      */
 
     document.addEventListener('DOMContentLoaded', async () => {
         // Get background page data via messaging
-        const backgroundData = await chrome.runtime.sendMessage({ action: 'getBackgroundData' });
-        const { utils, spaces } = backgroundData;
+        try {
+            const backgroundData = await sendMessageWithRetry({ action: 'getBackgroundData' });
+            const { utils, spaces } = backgroundData;
         
         const url = utils.getHashVariable('url', window.location.href);
         globalUrl = url !== '' ? decodeURIComponent(url) : false;
@@ -50,6 +75,11 @@
             renderCommon();
             routeView(action);
         });
+        } catch (error) {
+            console.error('Failed to initialize popup:', error);
+            // Display error message to user
+            document.body.innerHTML = '<div style="padding: 20px; color: red;">Failed to connect to background script. Please try reloading the extension.</div>';
+        }
     });
 
     function routeView(action) {
@@ -103,8 +133,9 @@
     }
 
     async function handleCloseAction() {
-        const backgroundData = await chrome.runtime.sendMessage({ action: 'getBackgroundData' });
-        const { utils } = backgroundData;
+        try {
+            const backgroundData = await sendMessageWithRetry({ action: 'getBackgroundData' });
+            const { utils } = backgroundData;
         const opener = utils.getHashVariable('opener', window.location.href);
         if (opener && opener === 'bg') {
             chrome.runtime.sendMessage({
@@ -113,6 +144,10 @@
         } else {
             window.close();
         }
+        } catch (error) {
+            console.error('Failed to handle close action:', error);
+            window.close(); // fallback
+        }
     }
 
     /*
@@ -120,8 +155,9 @@
      */
 
     async function renderMainCard() {
-        const backgroundData = await chrome.runtime.sendMessage({ action: 'getBackgroundData' });
-        const { spaces } = backgroundData;
+        try {
+            const backgroundData = await sendMessageWithRetry({ action: 'getBackgroundData' });
+            const { spaces } = backgroundData;
         spaces.requestHotkeys(hotkeys => {
             document.querySelector(
                 '#switcherLink .hotkey'
@@ -169,6 +205,9 @@
                 });
                 // renderMoveCard()
             });
+        } catch (error) {
+            console.error('Failed to render main card:', error);
+        }
     }
 
     function handleNameEdit() {

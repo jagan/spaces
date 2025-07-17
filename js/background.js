@@ -1662,18 +1662,31 @@ var spaces = (() => {
 
         // Handle popup communication requests
         if (request.action === 'getBackgroundData') {
-            sendResponse({
-                utils: {
-                    getHashVariable: utils.getHashVariable,
-                    getSwitchKeycodes: utils.getSwitchKeycodes,
-                },
-                spaces: {
-                    requestHotkeys: requestHotkeys,
-                    generatePopupParams: generatePopupParams,
-                    requestSpaceFromWindowId: requestSpaceFromWindowId,
-                    requestCurrentSpace: requestCurrentSpace,
+            try {
+                // Ensure service worker is initialized before responding
+                if (!utils || !utils.getHashVariable) {
+                    console.error('Utils not initialized, reinitializing...');
+                    initializeExtension();
+                    sendResponse({ error: 'Service worker not properly initialized, please try again' });
+                    return true;
                 }
-            });
+                
+                sendResponse({
+                    utils: {
+                        getHashVariable: utils.getHashVariable,
+                        getSwitchKeycodes: utils.getSwitchKeycodes,
+                    },
+                    spaces: {
+                        requestHotkeys: requestHotkeys,
+                        generatePopupParams: generatePopupParams,
+                        requestSpaceFromWindowId: requestSpaceFromWindowId,
+                        requestCurrentSpace: requestCurrentSpace,
+                    }
+                });
+            } catch (error) {
+                console.error('Error in getBackgroundData:', error);
+                sendResponse({ error: error.message });
+            }
             return true;
         }
 
@@ -1963,13 +1976,7 @@ var spaces = (() => {
         }
     });
 
-    // add context menu entry
-
-    chrome.contextMenus.create({
-        id: 'spaces-add-link',
-        title: 'Add link to space...',
-        contexts: ['link'],
-    });
+    // add context menu entry click listener (needs to be outside onInstalled)
     chrome.contextMenus.onClicked.addListener(info => {
         // handle showing the move tab popup (tab.html)
         if (info.menuItemId === 'spaces-add-link') {
@@ -1979,6 +1986,13 @@ var spaces = (() => {
 
     // runtime extension install listener
     chrome.runtime.onInstalled.addListener(details => {
+        // Create context menu entry only on install/update
+        chrome.contextMenus.create({
+            id: 'spaces-add-link',
+            title: 'Add link to space...',
+            contexts: ['link'],
+        });
+
         if (details.reason === 'install') {
             // eslint-disable-next-line no-console
             console.log('This is a first install!');
@@ -2030,8 +2044,8 @@ var spaces = (() => {
                 {
                     type: 'popup',
                     url,
-                    height: screen.height - 100,
-                    width: Math.min(screen.width, 1000),
+                    height: 700,
+                    width: 1000,
                     top: 0,
                     left: 0,
                 },
@@ -2112,8 +2126,8 @@ var spaces = (() => {
                         focused: true,
                         height: 450,
                         width: 310,
-                        top: screen.height - 450,
-                        left: screen.width - 310,
+                        top: 50,
+                        left: 50,
                     },
                     window => {
                         spacesPopupWindowId = window.id;
@@ -2325,8 +2339,8 @@ var spaces = (() => {
         chrome.windows.create(
             {
                 url: urls[0], // just pass first url, since we want to load the rest of the tabs in discarded state
-                height: screen.height - 100,
-                width: screen.width - 100,
+                height: 700,
+                width: 1000,
                 top: 0,
                 left: 0,
             },
@@ -2662,6 +2676,28 @@ var spaces = (() => {
     };
 })();
 
-// Initialize the extension
-spacesService.initialiseSpaces();
-spacesService.initialiseTabHistory();
+// Handle service worker lifecycle events
+chrome.runtime.onStartup.addListener(() => {
+    console.log('Service worker startup');
+    initializeExtension();
+});
+
+chrome.runtime.onSuspend.addListener(() => {
+    console.log('Service worker suspending');
+});
+
+// Initialize the extension when service worker starts
+function initializeExtension() {
+    (async () => {
+        try {
+            await spacesService.initialiseSpaces();
+            spacesService.initialiseTabHistory();
+            console.log('Extension initialized successfully');
+        } catch (error) {
+            console.error('Failed to initialize spaces service:', error);
+        }
+    })();
+}
+
+// Initialize immediately when service worker loads
+initializeExtension();
