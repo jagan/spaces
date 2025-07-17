@@ -150,6 +150,9 @@
               }).then(response => response.result);
 
         requestSpacePromise.then(space => {
+            console.log('=== SPACE PROMISE RESOLVED ===');
+            console.log('Space:', space);
+            console.log('About to call routeView with action:', action);
             globalCurrentSpace = space;
             renderCommon();
             routeView(action);
@@ -172,12 +175,22 @@
     });
 
     function routeView(action) {
+        console.log('=== ROUTING VIEW ===');
+        console.log('Action received:', action);
+        console.log('Action type:', typeof action);
+        
         if (action === 'move') {
+            console.log('Rendering move card');
             renderMoveCard();
         } else if (action === 'switch') {
+            console.log('Rendering switch card');
             renderSwitchCard();
-        } else {
+        } else if (action === 'main') {
+            console.log('Rendering main card');
             renderMainCard();
+        } else {
+            console.log('Rendering switch card (default)');
+            renderSwitchCard();
         }
     }
 
@@ -250,6 +263,11 @@
 
     async function renderMainCard() {
         try {
+            // Load the main template
+            document.getElementById(
+                'popupContainer'
+            ).innerHTML = document.getElementById('mainTemplate').innerHTML;
+            
             // Get hotkeys and set up UI
             const hotkeysResponse = await sendMessageWithRetry({ action: 'requestHotkeys' });
             const hotkeys = hotkeysResponse.result;
@@ -353,9 +371,15 @@
      */
 
     function renderSwitchCard() {
+        console.log('=== RENDER SWITCH CARD START ===');
+        console.log('popupContainer element:', document.getElementById('popupContainer'));
+        console.log('switcherTemplate element:', document.getElementById('switcherTemplate'));
+        
         document.getElementById(
             'popupContainer'
         ).innerHTML = document.getElementById('switcherTemplate').innerHTML;
+        
+        console.log('=== TEMPLATE LOADED ===');
         sendMessageWithRetry({ action: 'requestAllSpaces' }).then(response => {
             const spaces = response.result || response;
             if (!spaces) {
@@ -365,19 +389,77 @@
             
             spacesRenderer.initialise(8, true);
             spacesRenderer.renderSpaces(spaces);
-
             document.getElementById('spaceSelectForm').onsubmit = e => {
                 e.preventDefault();
                 handleSwitchAction(getSelectedSpace());
             };
 
-            const allSpaceEls = document.querySelectorAll('.space');
-            Array.prototype.forEach.call(allSpaceEls, el => {
-                // eslint-disable-next-line no-param-reassign
-                el.onclick = () => {
-                    handleSwitchAction(el);
+            // Detect if this is a keyboard shortcut popup
+            const isKeyboardShortcut = window.location.href.includes('opener=bg');
+            
+            if (isKeyboardShortcut) {
+                // For keyboard shortcuts, use a different approach
+                // Wait for window to be properly focused, then attach handlers
+                const waitForFocus = () => {
+                    if (document.hasFocus()) {
+                        attachHandlers();
+                    } else {
+                        setTimeout(waitForFocus, 100);
+                    }
                 };
-            });
+                setTimeout(waitForFocus, 200);
+            } else {
+                // For toolbar popup, attach immediately
+                attachHandlers();
+            }
+            
+            function attachHandlers() {
+                const spaceElements = document.querySelectorAll('.space');
+                spaceElements.forEach(spaceEl => {
+                    // Use onclick property directly
+                    spaceEl.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSwitchAction(spaceEl);
+                    };
+                    
+                    // Also handle mousedown for right clicks
+                    spaceEl.onmousedown = (e) => {
+                        if (e.button === 2) { // Right click
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleSwitchAction(spaceEl);
+                        }
+                    };
+                    
+                    // Also handle child spans
+                    const spans = spaceEl.querySelectorAll('span');
+                    spans.forEach(span => {
+                        span.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleSwitchAction(spaceEl);
+                        };
+                        
+                        span.onmousedown = (e) => {
+                            if (e.button === 2) { // Right click
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleSwitchAction(spaceEl);
+                            }
+                        };
+                    });
+                });
+            }
+            
+            // Add menu button handler
+            const menuBtn = document.getElementById('menuBtn');
+            if (menuBtn) {
+                menuBtn.onclick = () => {
+                    routeView('main');
+                };
+            }
+
         }).catch(error => {
             console.log('Error getting spaces for switcher:', error.message);
         });

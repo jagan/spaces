@@ -2278,20 +2278,36 @@ var spaces = (() => {
                             console.log('Popup window no longer exists, creating new one:', chrome.runtime.lastError.message);
                             spacesPopupWindowId = false;
                             // Recreate the window
-                            chrome.windows.create(
-                                {
-                                    type: 'popup',
-                                    url: popupUrl,
-                                    focused: true,
-                                    height: 450,
-                                    width: 310,
-                                    top: 50,
-                                    left: 50,
-                                },
-                                newWindow => {
-                                    spacesPopupWindowId = newWindow.id;
-                                }
-                            );
+                            // Try to use chrome.action.openPopup() if available (Chrome 99+)
+                            if (chrome.action && chrome.action.openPopup) {
+                                chrome.action.openPopup().catch(() => {
+                                    // Fallback to window creation if openPopup fails
+                                    createPopupWindow();
+                                });
+                            } else {
+                                createPopupWindow();
+                            }
+                            
+                            function createPopupWindow() {
+                                chrome.windows.create(
+                                    {
+                                        type: 'popup',
+                                        url: popupUrl,
+                                        focused: true,
+                                        height: 450,
+                                        width: 310,
+                                        top: 50,
+                                        left: 50,
+                                    },
+                                    newWindow => {
+                                        spacesPopupWindowId = newWindow.id;
+                                        // Ensure window is focused after creation
+                                        setTimeout(() => {
+                                            chrome.windows.update(newWindow.id, { focused: true });
+                                        }, 100);
+                                    }
+                                );
+                            }
                             return;
                         }
                         
@@ -2313,20 +2329,36 @@ var spaces = (() => {
 
                 // otherwise create it
             } else {
-                chrome.windows.create(
-                    {
-                        type: 'popup',
-                        url: popupUrl,
-                        focused: true,
-                        height: 450,
-                        width: 310,
-                        top: 50,
-                        left: 50,
-                    },
-                    window => {
-                        spacesPopupWindowId = window.id;
-                    }
-                );
+                // Try to use chrome.action.openPopup() if available (Chrome 99+)
+                if (chrome.action && chrome.action.openPopup) {
+                    chrome.action.openPopup().catch(() => {
+                        // Fallback to window creation if openPopup fails
+                        createPopupWindow();
+                    });
+                } else {
+                    createPopupWindow();
+                }
+                
+                function createPopupWindow() {
+                    chrome.windows.create(
+                        {
+                            type: 'popup',
+                            url: popupUrl,
+                            focused: true,
+                            height: 450,
+                            width: 310,
+                            top: 50,
+                            left: 50,
+                        },
+                        window => {
+                            spacesPopupWindowId = window.id;
+                            // Ensure window is focused after creation
+                            setTimeout(() => {
+                                chrome.windows.update(window.id, { focused: true });
+                            }, 100);
+                        }
+                    );
+                }
             }
         });
     }
