@@ -229,8 +229,11 @@
                 urlStr: window.location.href 
             });
             if (opener.result && opener.result === 'bg') {
-                chrome.runtime.sendMessage({
+                sendMessageWithRetry({
                     action: 'requestClose',
+                }).catch(error => {
+                    console.log('Error sending close message:', error.message);
+                    window.close(); // fallback
                 });
             } else {
                 window.close();
@@ -261,8 +264,10 @@
             const hotkeyEls = document.querySelectorAll('.hotkey');
             for (let i = 0; i < hotkeyEls.length; i += 1) {
                 hotkeyEls[i].addEventListener('click', () => {
-                    chrome.runtime.sendMessage({
+                    sendMessageWithRetry({
                         action: 'requestShowKeyboardShortcuts',
+                    }).catch(error => {
+                        console.log('Error sending keyboard shortcuts message:', error.message);
                     });
                     window.close();
                 });
@@ -271,8 +276,10 @@
             document
                 .querySelector('#allSpacesLink .optionText')
                 .addEventListener('click', () => {
-                    chrome.runtime.sendMessage({
+                    sendMessageWithRetry({
                         action: 'requestShowSpaces',
+                    }).catch(error => {
+                        console.log('Error sending show spaces message:', error.message);
                     });
                     window.close();
                 });
@@ -323,23 +330,21 @@
         }
 
         if (globalCurrentSpace.sessionId) {
-            chrome.runtime.sendMessage(
-                {
-                    action: 'updateSessionName',
-                    sessionName: newName,
-                    sessionId: globalCurrentSpace.sessionId,
-                },
-                () => {}
-            );
+            sendMessageWithRetry({
+                action: 'updateSessionName',
+                sessionName: newName,
+                sessionId: globalCurrentSpace.sessionId,
+            }).catch(error => {
+                console.log('Error updating session name:', error.message);
+            });
         } else {
-            chrome.runtime.sendMessage(
-                {
-                    action: 'saveNewSession',
-                    sessionName: newName,
-                    windowId: globalCurrentSpace.windowId,
-                },
-                () => {}
-            );
+            sendMessageWithRetry({
+                action: 'saveNewSession',
+                sessionName: newName,
+                windowId: globalCurrentSpace.windowId,
+            }).catch(error => {
+                console.log('Error saving new session:', error.message);
+            });
         }
     }
 
@@ -351,7 +356,13 @@
         document.getElementById(
             'popupContainer'
         ).innerHTML = document.getElementById('switcherTemplate').innerHTML;
-        chrome.runtime.sendMessage({ action: 'requestAllSpaces' }, spaces => {
+        sendMessageWithRetry({ action: 'requestAllSpaces' }).then(response => {
+            const spaces = response.result || response;
+            if (!spaces) {
+                console.log('Could not get spaces for switcher');
+                return;
+            }
+            
             spacesRenderer.initialise(8, true);
             spacesRenderer.renderSpaces(spaces);
 
@@ -367,6 +378,8 @@
                     handleSwitchAction(el);
                 };
             });
+        }).catch(error => {
+            console.log('Error getting spaces for switcher:', error.message);
         });
     }
 
@@ -375,10 +388,12 @@
     }
 
     function handleSwitchAction(selectedSpaceEl) {
-        chrome.runtime.sendMessage({
+        sendMessageWithRetry({
             action: 'switchToSpace',
             sessionId: selectedSpaceEl.getAttribute('data-sessionId'),
             windowId: selectedSpaceEl.getAttribute('data-windowId'),
+        }).catch(error => {
+            console.log('Error switching to space:', error.message);
         });
         window.close();
     }
@@ -442,29 +457,34 @@
 
         updateTabDetails();
 
-        chrome.runtime.sendMessage(
-            {
-                action: 'requestAllSpaces',
-            },
-            spaces => {
-                // remove currently visible space
-                const filteredSpaces = spaces.filter(space => {
-                    return `${space.windowId}` !== globalWindowId;
-                });
-                spacesRenderer.initialise(5, false);
-                spacesRenderer.renderSpaces(filteredSpaces);
-
-                const allSpaceEls = document.querySelectorAll('.space');
-                Array.prototype.forEach.call(allSpaceEls, el => {
-                    // eslint-disable-next-line no-param-reassign
-                    const existingClickHandler = el.onclick;
-                    el.onclick = e => {
-                        existingClickHandler(e);
-                        handleSelectAction();
-                    };
-                });
+        sendMessageWithRetry({
+            action: 'requestAllSpaces',
+        }).then(response => {
+            const spaces = response.result || response;
+            if (!spaces) {
+                console.log('Could not get spaces for move card');
+                return;
             }
-        );
+            
+            // remove currently visible space
+            const filteredSpaces = spaces.filter(space => {
+                return `${space.windowId}` !== globalWindowId;
+            });
+            spacesRenderer.initialise(5, false);
+            spacesRenderer.renderSpaces(filteredSpaces);
+
+            const allSpaceEls = document.querySelectorAll('.space');
+            Array.prototype.forEach.call(allSpaceEls, el => {
+                // eslint-disable-next-line no-param-reassign
+                const existingClickHandler = el.onclick;
+                el.onclick = e => {
+                    existingClickHandler(e);
+                    handleSelectAction();
+                };
+            });
+        }).catch(error => {
+            console.log('Error getting spaces for move card:', error.message);
+        });
     }
 
     function updateTabDetails() {
@@ -472,36 +492,36 @@
 
         // if we are working with an open chrome tab
         if (globalTabId.length > 0) {
-            chrome.runtime.sendMessage(
-                {
-                    action: 'requestTabDetail',
-                    tabId: globalTabId,
-                },
-                tab => {
-                    if (tab) {
-                        nodes.activeTabTitle.innerHTML = tab.title;
+            sendMessageWithRetry({
+                action: 'requestTabDetail',
+                tabId: globalTabId,
+            }).then(response => {
+                const tab = response.result || response;
+                if (tab) {
+                    nodes.activeTabTitle.innerHTML = tab.title;
 
-                        // try to get best favicon url path
-                        if (
-                            tab.favIconUrl &&
-                            tab.favIconUrl.indexOf('chrome://theme') < 0
-                        ) {
-                            faviconSrc = tab.favIconUrl;
-                        } else {
-                            faviconSrc = `chrome://favicon/${tab.url}`;
-                        }
-                        nodes.activeTabFavicon.setAttribute('src', faviconSrc);
-
-                        nodes.moveInput.setAttribute(
-                            'placeholder',
-                            'Move tab to..'
-                        );
-
-                        // nodes.windowTitle.innerHTML = tab.title;
-                        // nodes.windowFavicon.setAttribute('href', faviconSrc);
+                    // try to get best favicon url path
+                    if (
+                        tab.favIconUrl &&
+                        tab.favIconUrl.indexOf('chrome://theme') < 0
+                    ) {
+                        faviconSrc = tab.favIconUrl;
+                    } else {
+                        faviconSrc = `chrome://favicon/${tab.url}`;
                     }
+                    nodes.activeTabFavicon.setAttribute('src', faviconSrc);
+
+                    nodes.moveInput.setAttribute(
+                        'placeholder',
+                        'Move tab to..'
+                    );
+
+                    // nodes.windowTitle.innerHTML = tab.title;
+                    // nodes.windowFavicon.setAttribute('href', faviconSrc);
                 }
-            );
+            }).catch(error => {
+                console.log('Error getting tab details:', error.message);
+            });
 
             // else if we are dealing with a url only
         } else if (globalUrl) {
@@ -558,14 +578,18 @@
             }
         }
 
-        chrome.runtime.sendMessage(params);
+        sendMessageWithRetry(params).catch(error => {
+            console.log('Error sending select action:', error.message);
+        });
         // this window will be closed by background script
     }
     function handleEditSpace() {
-        chrome.runtime.sendMessage({
+        sendMessageWithRetry({
             action: 'requestShowSpaces',
             windowId: globalWindowId,
             edit: 'true',
+        }).catch(error => {
+            console.log('Error requesting show spaces:', error.message);
         });
     }
 })();

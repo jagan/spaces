@@ -6,6 +6,18 @@
     let globalSelectedSpace;
     let bannerState;
 
+    // Wrapper function for chrome.runtime.sendMessage with error handling
+    function sendMessageSafely(message, callback) {
+        chrome.runtime.sendMessage(message, (response) => {
+            if (chrome.runtime.lastError) {
+                console.log('Message send error (background script may be unavailable):', chrome.runtime.lastError.message);
+                if (callback) callback(null);
+            } else {
+                if (callback) callback(response);
+            }
+        });
+    }
+
     // METHODS FOR RENDERING SIDENAV (spaces list)
 
     function renderSpacesList(spaces) {
@@ -440,7 +452,7 @@
     // SERVICES
 
     function fetchAllSpaces(callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'requestAllSpaces',
             },
@@ -449,7 +461,7 @@
     }
 
     function fetchSpaceDetail(sessionId, windowId, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'requestSpaceDetail',
                 sessionId: sessionId || false,
@@ -460,7 +472,7 @@
     }
 
     function performLoadSession(sessionId, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'loadSession',
                 sessionId,
@@ -470,7 +482,7 @@
     }
 
     function performLoadWindow(windowId, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'loadWindow',
                 windowId,
@@ -480,7 +492,7 @@
     }
 
     function performLoadTabInSession(sessionId, tabUrl, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'loadTabInSession',
                 sessionId,
@@ -491,7 +503,7 @@
     }
 
     function performLoadTabInWindow(windowId, tabUrl, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'loadTabInWindow',
                 windowId,
@@ -502,7 +514,7 @@
     }
 
     function performDelete(sessionId, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'deleteSession',
                 sessionId,
@@ -512,7 +524,7 @@
     }
 
     function performSessionUpdate(newName, sessionId, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'updateSessionName',
                 sessionName: newName,
@@ -523,7 +535,7 @@
     }
 
     function performNewSessionSave(newName, windowId, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'saveNewSession',
                 sessionName: newName,
@@ -534,7 +546,7 @@
     }
 
     function performSessionImport(urlList, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'importNewSession',
                 urlList,
@@ -544,7 +556,7 @@
     }
 
     function performRestoreFromBackup(spacesObject, callback) {
-        chrome.runtime.sendMessage(
+        sendMessageSafely(
             {
                 action: 'restoreFromBackup',
                 spaces: spacesObject,

@@ -832,38 +832,57 @@ globalThis.utils = {
     },
 
     getSwitchKeycodes: callback => {
-        chrome.runtime.sendMessage({ action: 'requestHotkeys' }, commands => {
-            // eslint-disable-next-line no-console
-            console.dir(commands);
+        // Since we're in the background script, call requestHotkeys directly instead of messaging
+        if (typeof requestHotkeys === 'function') {
+            requestHotkeys(commands => {
+                // eslint-disable-next-line no-console
+                console.dir(commands);
 
-            const commandStr = commands.switchCode;
+                const commandStr = commands.switchCode;
 
-            const keyStrArray = commandStr.split('+');
+                if (!commandStr) {
+                    callback({
+                        primaryModifier: null,
+                        secondaryModifier: null,
+                        mainKeyCode: null,
+                    });
+                    return;
+                }
 
-            // get keyStr of primary modifier
-            const primaryModifier = keyStrArray[0];
+                const keyStrArray = commandStr.split('+');
 
-            // get keyStr of secondary modifier
-            const secondaryModifier =
-                keyStrArray.length === 3 ? keyStrArray[1] : false;
+                // get keyStr of primary modifier
+                const primaryModifier = keyStrArray[0];
 
-            // get keycode of main key (last in array)
-            const curStr = keyStrArray[keyStrArray.length - 1];
+                // get keyStr of secondary modifier
+                const secondaryModifier =
+                    keyStrArray.length === 3 ? keyStrArray[1] : false;
 
-            // TODO: There's others. Period. Up Arrow etc.
-            let mainKeyCode;
-            if (curStr === 'Space') {
-                mainKeyCode = 32;
-            } else {
-                mainKeyCode = curStr.toUpperCase().charCodeAt();
-            }
+                // get keycode of main key (last in array)
+                const curStr = keyStrArray[keyStrArray.length - 1];
 
-            callback({
-                primaryModifier,
-                secondaryModifier,
-                mainKeyCode,
+                // TODO: There's others. Period. Up Arrow etc.
+                let mainKeyCode;
+                if (curStr === 'Space') {
+                    mainKeyCode = 32;
+                } else {
+                    mainKeyCode = curStr.toUpperCase().charCodeAt();
+                }
+
+                callback({
+                    primaryModifier,
+                    secondaryModifier,
+                    mainKeyCode,
+                });
             });
-        });
+        } else {
+            console.error('requestHotkeys function not available');
+            callback({
+                primaryModifier: null,
+                secondaryModifier: null,
+                mainKeyCode: null,
+            });
+        }
     },
 };
 
@@ -2361,6 +2380,11 @@ var spaces = (() => {
             chrome.runtime.sendMessage({
                 action: 'updateSpaces',
                 spaces: allSpaces,
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    // This is normal when no extension pages are open to receive the message
+                    console.log('No receivers for updateSpaces message (normal when extension pages are closed)');
+                }
             });
         });
     }

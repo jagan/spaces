@@ -1,12 +1,24 @@
 /* global chrome, spacesRenderer  */
 
 (() => {
+    // Wrapper function for chrome.runtime.sendMessage with error handling
+    function sendMessageSafely(message, callback) {
+        chrome.runtime.sendMessage(message, (response) => {
+            if (chrome.runtime.lastError) {
+                console.log('Message send error (background script may be unavailable):', chrome.runtime.lastError.message);
+                if (callback) callback(null);
+            } else {
+                if (callback) callback(response);
+            }
+        });
+    }
+
     function getSelectedSpace() {
         return document.querySelector('.space.selected');
     }
 
     function handleSwitchAction(selectedSpaceEl) {
-        chrome.runtime.sendMessage({
+        sendMessageSafely({
             action: 'switchToSpace',
             sessionId: selectedSpaceEl.getAttribute('data-sessionId'),
             windowId: selectedSpaceEl.getAttribute('data-windowId'),
@@ -14,17 +26,37 @@
     }
 
     function handleCloseAction() {
-        chrome.runtime.sendMessage({
+        sendMessageSafely({
             action: 'requestClose',
         });
     }
 
     function getSwitchKeycodes(callback) {
-        chrome.runtime.sendMessage({ action: 'requestHotkeys' }, commands => {
+        sendMessageSafely({ action: 'requestHotkeys' }, commands => {
+            if (!commands) {
+                console.log('Could not get hotkeys from background script');
+                callback({
+                    primaryModifier: null,
+                    secondaryModifier: null,
+                    mainKeyCode: null,
+                });
+                return;
+            }
+
             // eslint-disable-next-line no-console
             console.dir(commands);
 
             const commandStr = commands.switchCode;
+            
+            if (!commandStr) {
+                callback({
+                    primaryModifier: null,
+                    secondaryModifier: null,
+                    mainKeyCode: null,
+                });
+                return;
+            }
+
             const keyStrArray = commandStr.split('+');
 
             // get keyStr of primary modifier
@@ -81,7 +113,11 @@
     }
 
     window.onload = () => {
-        chrome.runtime.sendMessage({ action: 'requestAllSpaces' }, spaces => {
+        sendMessageSafely({ action: 'requestAllSpaces' }, spaces => {
+            if (!spaces) {
+                console.log('Could not get spaces from background script');
+                return;
+            }
             spacesRenderer.initialise(8, true);
             spacesRenderer.renderSpaces(spaces);
             addEventListeners();

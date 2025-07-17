@@ -28,10 +28,38 @@ var utils = {
 
     getSwitchKeycodes: callback => {
         chrome.runtime.sendMessage({ action: 'requestHotkeys' }, commands => {
+            if (chrome.runtime.lastError) {
+                console.log('Error getting hotkeys:', chrome.runtime.lastError.message);
+                callback({
+                    primaryModifier: null,
+                    secondaryModifier: null,
+                    mainKeyCode: null,
+                });
+                return;
+            }
+
+            if (!commands) {
+                callback({
+                    primaryModifier: null,
+                    secondaryModifier: null,
+                    mainKeyCode: null,
+                });
+                return;
+            }
+
             // eslint-disable-next-line no-console
             console.dir(commands);
 
             const commandStr = commands.switchCode;
+
+            if (!commandStr) {
+                callback({
+                    primaryModifier: null,
+                    secondaryModifier: null,
+                    mainKeyCode: null,
+                });
+                return;
+            }
 
             const keyStrArray = commandStr.split('+');
 
